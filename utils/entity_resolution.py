@@ -1,10 +1,10 @@
-"""Conservative entity resolution and provenance for HoReCa observations.
+"""Conservative entity resolution and provenance for B2B observations.
 
 The parsers emit *observations*.  Two observations are considered the same
 venue only when they share strong evidence (source id, phone, domain,
 address+name, or nearby coordinates+name).  A matching name/city by itself is
 deliberately insufficient: generic names and multiple branches are common in
-HoReCa.
+B2B companies.
 """
 from __future__ import annotations
 

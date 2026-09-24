@@ -28,7 +28,7 @@ def main() -> None:
         print()
         print("Steps to create it:")
         print("  1. Open https://console.cloud.google.com/")
-        print("  2. Create or select a project (e.g. 'horeca-parsing')")
+        print("  2. Create or select a project (e.g. 'b2b-parsing')")
         print("  3. APIs & Services → Credentials")
         print("  4. + CREATE CREDENTIALS → OAuth client ID")
         print("  5. Application type: Desktop app")
@@ -62,7 +62,7 @@ def main() -> None:
     print(f"   Refresh token present: {has_refresh}")
     print()
     print("Upload to server:")
-    print(f"   scp {TOKEN_PATH} root@<server-ip>:/home/horeca_parser/token.json")
+    print(f"   scp {TOKEN_PATH} root@<server-ip>:/home/b2b_parser/token.json")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,57 @@
+# /etc/systemd/system/b2b_parser.service
+# Полный прогон парсера. Запуск ТОЛЬКО с --no-block (oneshot блокируется на часы):
+#   systemctl start --no-block b2b_parser.service
+[Unit]
+Description=B2B Crimea Parser (full run: OSM + VK + Yandex Maps + Crawler + enrichment)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=b2b-parser
+Group=b2b-parser
+WorkingDirectory=/home/b2b_parser
+ExecStart=/home/b2b_parser/venv/bin/python main.py
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=HOME=/home/b2b_parser
+Environment=PLAYWRIGHT_BROWSERS_PATH=/home/b2b_parser/.cache/ms-playwright
+Environment=XDG_CONFIG_HOME=/home/b2b_parser/output/.browser-config
+Environment=XDG_CACHE_HOME=/home/b2b_parser/output/.browser-cache
+
+# install(1) is prefixed with '+' so only these preparation commands retain
+# manager privileges; the parser and Chromium always run as b2b-parser.
+ExecStartPre=+/usr/bin/install -d -o b2b-parser -g b2b-parser -m 0750 /home/b2b_parser/output
+ExecStartPre=+/usr/bin/install -d -o root -g b2b-parser -m 0750 /home/b2b_parser/.cache/ms-playwright
+ExecStartPre=+/usr/bin/install -d -o b2b-parser -g b2b-parser -m 0700 /home/b2b_parser/output/.browser-config
+ExecStartPre=+/usr/bin/install -d -o b2b-parser -g b2b-parser -m 0700 /home/b2b_parser/output/.browser-cache
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=b2b-parser
+
+# Chromium-compatible hardening.  Avoid syscall filters/PrivateUsers here:
+# both commonly break Chromium's own user-namespace sandbox.
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictRealtime=true
+LockPersonality=true
+ReadWritePaths=/home/b2b_parser/output
+ReadWritePaths=-/home/b2b_parser/token.json
+# Прогон с ENRICH_MAX_SITES=400 укладывается в часы, не сутки.
+TimeoutStartSec=12h
+# Chromium течёт; лимит защищает соседей по серверу от OOM.
+MemoryMax=3G
+OOMPolicy=stop
+
+[Install]
+WantedBy=multi-user.target

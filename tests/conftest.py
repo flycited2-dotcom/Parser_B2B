@@ -1,4 +1,4 @@
-"""Делает корень `HORECA_parsing/` importable: `from utils...`, `from parsers...`."""
+"""Делает корень `Parser_B2B/` importable: `from utils...`, `from parsers...`."""
 import os
 import sys
 

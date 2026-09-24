@@ -1,4 +1,4 @@
-"""Find the official website of a HoReCa venue by name and city via DuckDuckGo."""
+"""Find the official website of a company by name and city via DuckDuckGo."""
 from __future__ import annotations
 
 import re
@@ -50,7 +50,7 @@ def find_website(name: str, city: str, timeout: int = 15) -> str | None:
     url = f"https://html.duckduckgo.com/html/?q={query}"
     req = urllib.request.Request(
         url,
-        headers={"User-Agent": "Mozilla/5.0 (compatible; HorecaSiteFinder/1.0)"},
+        headers={"User-Agent": "Mozilla/5.0 (compatible; B2BSiteFinder/1.0)"},
     )
     try:
         validate_public_url(url)

@@ -5,10 +5,10 @@
 abi <abi/4.0>,
 include <tunables/global>
 
-profile horeca-parser-chromium /home/horeca_parser/.cache/ms-playwright/chromium-*/chrome-linux64/chrome flags=(unconfined) {
+profile b2b-parser-chromium /home/b2b_parser/.cache/ms-playwright/chromium-*/chrome-linux64/chrome flags=(unconfined) {
   userns,
 }
 
-profile horeca-parser-chromium-headless /home/horeca_parser/.cache/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell flags=(unconfined) {
+profile b2b-parser-chromium-headless /home/b2b_parser/.cache/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell flags=(unconfined) {
   userns,
 }

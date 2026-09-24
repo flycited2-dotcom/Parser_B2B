@@ -1,4 +1,4 @@
-# Runbook: безопасный запуск HORECA Parser
+# Runbook: безопасный запуск B2B Parser
 
 Все команды выполнять из корня проекта. Shell environment имеет приоритет
 над `.env`, поэтому одноразовые настройки можно передавать перед командой.
@@ -17,11 +17,11 @@
    venv/bin/pip install -r requirements.lock
    # Системные пакеты устанавливаются администратором один раз.
    venv/bin/playwright install-deps chromium
-   sudo -u horeca-parser env HOME=/home/horeca_parser \
-     PLAYWRIGHT_BROWSERS_PATH=/home/horeca_parser/.cache/ms-playwright \
+   sudo -u b2b-parser env HOME=/home/b2b_parser \
+     PLAYWRIGHT_BROWSERS_PATH=/home/b2b_parser/.cache/ms-playwright \
      venv/bin/playwright install chromium
-   chown -R root:horeca-parser /home/horeca_parser/.cache
-   chmod -R u=rwX,g=rX,o= /home/horeca_parser/.cache
+   chown -R root:b2b-parser /home/b2b_parser/.cache
+   chmod -R u=rwX,g=rX,o= /home/b2b_parser/.cache
    ```
 
 4. Запустить unit-тесты без сетевых парсеров:
@@ -30,12 +30,12 @@
    venv/bin/python -m pytest -p no:cacheprovider
    ```
 
-5. Создать системного пользователя `horeca-parser` без login shell. Проверить
+5. Создать системного пользователя `b2b-parser` без login shell. Проверить
    права: код не должен быть world-writable; `.env`, OAuth token и
    service-account JSON — `0600`, владелец — пользователь сервиса; `output/`
    и `.cache/ms-playwright/` доступны ему на запись.
 6. На Ubuntu 23.10+ установить root-owned профиль
-   `deploy/horeca-parser-chromium.apparmor` в `/etc/apparmor.d/` и выполнить
+   `deploy/b2b-parser-chromium.apparmor` в `/etc/apparmor.d/` и выполнить
    `systemctl reload apparmor`. Не отключать
    `kernel.apparmor_restrict_unprivileged_userns` глобально и не добавлять
    Chromium флаг `--no-sandbox`. Основание: официальная инструкция Chromium
@@ -138,7 +138,7 @@ AUTO_NOTIFY=0 AUTO_UPLOAD=0 venv/bin/python main.py
 ```
 
 Следить за process exit code, RAM/swap, свободным диском,
-`journalctl -u horeca_parser.service -f`,
+`journalctl -u b2b_parser.service -f`,
 `output/progress.json` и `output/run_summary.json`. Не считать запуск успешным
 только по наличию CSV: обязательны exit code `0`, непустой master и отсутствие
 failures в summary.
@@ -166,8 +166,8 @@ failures в summary.
 
 - Настроить срок хранения journald; ограничить срок хранения raw
   result/enriched files.
-- Передавать в `Email_horeca_send` только `outreach_ready.xlsx`, никогда не
-  полный `master_all.xlsx`; каждый новый `run_id` требует отдельного approval.
+- Передавать на рассылку только `outreach_ready.xlsx`, никогда не полный
+  `master_all.xlsx`; каждый новый `run_id` требует отдельного approval.
 - Хранить внешний версионный backup `output/`, включая `dedup.db`, manifests и
   raw CSV. Google Drive `master_all` не заменяет такой backup.
 - Следить за `failure_count`, числом строк master и временем каждого источника.

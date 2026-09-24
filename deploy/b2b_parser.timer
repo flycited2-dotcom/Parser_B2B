@@ -1,0 +1,13 @@
+# /etc/systemd/system/b2b_parser.timer
+# Еженедельный запуск ПТ 03:00 MSK.
+# На том же VPS работают hotels_sbor_baza (ВС 03:00) и horeca_parser
+# (СБ 03:00): пятница выбрана, чтобы Chromium-процессы не пересекались (OOM).
+[Unit]
+Description=Weekly B2B parser run (Fri 03:00)
+
+[Timer]
+OnCalendar=Fri *-*-* 03:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
