@@ -80,3 +80,9 @@ def test_quality_policy_requires_actual_vk_source_for_quarantine():
     assert not is_master_anchor({
         "source": "VK", "quality_flags": "vk_noise_primary",
     })
+
+
+def test_segment_trigger_detects_business_and_ignores_food():
+    assert crawler._has_segment_trigger("<title>Натяжные потолки в Симферополе</title>")
+    assert crawler._has_segment_trigger("<h1>АВТОСЕРВИС на Киевской</h1>")
+    assert not crawler._has_segment_trigger("<title>Меню ресторана и бронирование столика</title>")

@@ -10,8 +10,8 @@
 3. Из каждой посещённой страницы:
    - извлекаем phone/email/address (как email_finder)
    - извлекаем <title>/<h1> как потенциальное имя нового объекта (если на странице
-     есть HoReCa-триггеры: «ресторан», «кафе», «меню», «доставка», «бронирование стола»)
-4. Ссылки на сторонние домены проверяем по эвристике «сайт заведения общепита» —
+     есть сегментные триггеры из config/segments.py)
+4. Ссылки на сторонние домены проверяем по эвристике «сайт компании сегмента» —
    если домен не агрегатор и в title есть триггер → добавляем как seed-кандидат
    (но всё равно не больше MAX_TOTAL_PAGES).
 
@@ -27,6 +27,7 @@ from urllib.parse import urlparse, urljoin
 
 import aiohttp
 
+from config.segments import crawler_triggers, fold, normalize_segment
 from utils.storage import save_item
 from utils.aggregators import is_aggregator
 from utils.net_safety import (
@@ -69,17 +70,12 @@ MAX_REDIRECTS = 5
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
 
-HORECA_TRIGGERS = (
-    "ресторан", "кафе", "бар", "паб", "клуб", "кофейня",
-    "столовая", "фудкорт", "пиццерия", "кондитерская", "фастфуд",
-    "меню", "доставка еды", "бронирование стола", "столик",
-    "restaurant", "cafe", "bar", "pub", "club", "coffee", "pizza",
-)
+SEGMENT_TRIGGERS = crawler_triggers()
 
 # Интересные пути — приоритет в очереди обхода
 INTERESTING_PATHS_RE = re.compile(
-    r"/(contacts?|about|partner|filial|location|menu|delivery|objects?|"
-    r"меню|доставка|контакт|о-нас|о_нас|о-компании|объект|филиал)",
+    r"/(contacts?|about|partner|filial|location|services?|uslugi|price|objects?|"
+    r"услуги|прайс|контакт|о-нас|о_нас|о-компании|объект|филиал)",
     re.IGNORECASE,
 )
 
@@ -124,9 +120,9 @@ def _strip(s: str) -> str:
     return WS_RE.sub(" ", s).strip()
 
 
-def _has_horeca_trigger(text: str) -> bool:
-    low = (text or "").lower()
-    return any(t in low for t in HORECA_TRIGGERS)
+def _has_segment_trigger(text: str) -> bool:
+    low = fold(text)
+    return any(trigger in low for trigger in SEGMENT_TRIGGERS)
 
 
 def _load_seeds_from_csv(path: str) -> list[str]:
@@ -297,7 +293,7 @@ async def _crawl_domain(session: aiohttp.ClientSession, origin: str,
     best_address = ""
     all_phones: list[str] = []
     all_emails: list[str] = []
-    has_horeca_trigger = False
+    has_segment_trigger = False
 
     while queue and pages_in_domain < MAX_PAGES_PER_DOMAIN \
             and total_counter[0] < MAX_TOTAL_PAGES:
@@ -312,9 +308,9 @@ async def _crawl_domain(session: aiohttp.ClientSession, origin: str,
         if not html:
             continue
 
-        # Триггер «общепита» хоть на одной странице → засчитываем домен
-        if not has_horeca_trigger and _has_horeca_trigger(html[:8000]):
-            has_horeca_trigger = True
+        # Сегментный триггер хоть на одной странице → засчитываем домен
+        if not has_segment_trigger and _has_segment_trigger(html[:8000]):
+            has_segment_trigger = True
 
         # Имя — приоритет: главная (первая успешная), затем /о-нас если на главной не нашли
         if not main_name:
@@ -348,22 +344,12 @@ async def _crawl_domain(session: aiohttp.ClientSession, origin: str,
                 elif len(queue) < MAX_PAGES_PER_DOMAIN * 2:
                     queue.append(link)
 
-    # Запись только если: есть имя + домен похож на заведение общепита
-    if not main_name or not has_horeca_trigger:
+    # Запись только если: есть имя + на сайте есть сегментный триггер
+    if not main_name or not has_segment_trigger:
         return 0
 
     city = _detect_city_from_text(best_address or main_name)
-    # Категория из имени: триггеры вроде «меню»/«столик» — только гейт домена,
-    # категорией могут стать лишь те, что нормализуются в реальный тип.
-    from utils.categories import normalize as normalize_category
-    cat = "прочее"
-    low_name = main_name.lower()
-    for trig in HORECA_TRIGGERS:
-        if trig in low_name:
-            norm = normalize_category(trig)
-            if norm != "прочее":
-                cat = norm
-                break
+    cat = normalize_segment(main_name)
 
     if save_item({
         "city": city,
