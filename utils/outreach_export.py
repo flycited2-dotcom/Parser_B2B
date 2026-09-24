@@ -1,38 +1,45 @@
-"""Build an approval-gated workbook for the existing email automation.
+"""Build an approval-gated B2B outreach workbook.
 
 The canonical master remains complete.  This module creates a smaller,
-auditable delivery candidate file with the exact Russian headers consumed by
-``Email_horeca_send``.  It never sends mail and never marks data as approved.
+auditable delivery candidate file with one row per email, the company
+segment and a heuristic pitch reason.  It never sends mail and never marks
+data as approved.
 """
 from __future__ import annotations
 
 import csv
+import json
 import os
 import re
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
+from openpyxl.utils import get_column_letter
 
+from config.segments import (
+    EXCLUDE_EMAIL_DOMAINS,
+    EXCLUDED_FLAGS,
+    SEGMENT_BY_KEY,
+    segment_title,
+)
+from utils.cross_base import is_in_other_base
 from utils.csv_safety import neutralize_csv_formula
 from utils.quality import VK_QUARANTINE_FLAGS
+from utils.web_signals import row_signals
 
 
 OUTREACH_HEADERS = [
-    "Email", "Название", "Тип клиента", "Город", "Телефон", "Сайт",
-    "Соцсеть", "Адрес", "Источник", "ID объекта", "Доверие",
-    "Флаги качества", "Все email", "Все телефоны",
+    "Email", "Название", "Сегмент", "Все сегменты", "Город", "Телефон", "Сайт",
+    "Соцсеть", "Адрес", "Повод для КП", "Сигналы", "Источник", "ID объекта",
+    "Доверие", "Флаги качества", "Все email", "Все телефоны",
 ]
+COLUMN_WIDTHS = [30, 36, 26, 34, 16, 22, 34, 30, 40, 26, 34, 18, 30, 10, 30, 44, 44]
 
-TARGET_TYPES = {
-    "ресторан", "кафе", "фастфуд", "бар", "паб", "клуб", "кофейня",
-    "столовая", "фудкорт", "пиццерия", "кондитерская",
-}
-
-HARD_REJECT_FLAGS = {"outside_crimea", "vk_negative_terms", *VK_QUARANTINE_FLAGS}
-MANUAL_SEGMENT_FLAGS = {"vk_manual_business_segment"}
+HARD_REJECT_FLAGS = {"outside_crimea", *VK_QUARANTINE_FLAGS}
 EMAIL_RE = re.compile(r"[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}", re.I)
 EMAIL_BLACKLIST = re.compile(
     r"(?:^|@)(?:example(?:\.|@)|test(?:\.|@))|"
@@ -41,9 +48,10 @@ EMAIL_BLACKLIST = re.compile(
     re.I,
 )
 PREFERRED_PREFIXES = (
-    "reservation", "reservations", "booking", "reception", "info",
-    "order", "zakaz", "sales", "manager", "office", "contact",
+    "info", "office", "sales", "zakaz", "order", "manager", "contact",
+    "director", "reception", "booking",
 )
+TRUE_VALUES = {"1", "true", "yes", "on"}
 
 
 def _confidence(row: dict) -> float:
@@ -73,17 +81,19 @@ def _website_domain(value: str) -> str:
         return ""
 
 
+def _blocked_domain(domain: str) -> bool:
+    return any(domain == blocked or domain.endswith("." + blocked) for blocked in EXCLUDE_EMAIL_DOMAINS)
+
+
 def _email_candidates(row: dict) -> list[str]:
     website_domain = _website_domain(row.get("website", ""))
-    candidates: dict[str, tuple[int, str]] = {}
-    material = " | ".join(
-        str(row.get(field) or "") for field in ("email", "all_emails")
-    )
+    candidates: dict[str, int] = {}
+    material = " | ".join(str(row.get(field) or "") for field in ("email", "all_emails"))
     for match in EMAIL_RE.findall(material):
         email = match.strip().casefold()
-        if EMAIL_BLACKLIST.search(email):
-            continue
         local, _separator, domain = email.partition("@")
+        if EMAIL_BLACKLIST.search(email) or _blocked_domain(domain):
+            continue
         score = 0
         if website_domain and (
             domain == website_domain
@@ -95,50 +105,73 @@ def _email_candidates(row: dict) -> list[str]:
             if local == prefix or local.startswith(prefix + "."):
                 score += 50 - index
                 break
-        current = candidates.get(email)
-        if current is None or score > current[0]:
-            candidates[email] = (score, email)
-    return [
-        email
-        for _score, email in sorted(
-            candidates.values(), key=lambda item: (-item[0], item[1])
-        )
-    ]
+        candidates[email] = max(score, candidates.get(email, score))
+    return [email for email, _score in sorted(candidates.items(), key=lambda item: (-item[1], item[0]))]
 
 
-def _review_reason(row: dict, min_confidence: float) -> str:
+def _segments_all(row: dict) -> str:
+    candidates = [str(row.get("client_type") or "")]
+    try:
+        provenance = json.loads(str(row.get("provenance") or "") or "{}")
+    except ValueError:
+        provenance = {}
+    fields = provenance.get("fields") if isinstance(provenance, dict) else None
+    if not isinstance(fields, dict):
+        fields = {}
+    for evidence in fields.get("client_type") or []:
+        if isinstance(evidence, dict):
+            candidates.append(str(evidence.get("value") or ""))
+    keys = [key for key in dict.fromkeys(candidates) if key in SEGMENT_BY_KEY]
+    return "; ".join(segment_title(key) for key in keys)
+
+
+def _review_reason(
+    row: dict,
+    min_confidence: float,
+    *,
+    include_competitors: bool,
+    other_base: tuple[set[str], set[str]] | None,
+) -> str:
     if not str(row.get("name") or "").strip():
         return "missing_name"
-    if str(row.get("client_type") or "").strip().casefold() not in TARGET_TYPES:
-        return "non_target_type"
-    emails = _email_candidates(row)
-    if not emails:
-        return "missing_or_invalid_email"
     flags = _flags(row)
+    excluded = sorted(flags & EXCLUDED_FLAGS)
+    if excluded:
+        return excluded[0]
+    segment = SEGMENT_BY_KEY.get(str(row.get("client_type") or "").strip())
+    if segment is None:
+        return "no_segment"
+    if segment.competitor and not include_competitors:
+        return "competitor_segment"
+    if not _email_candidates(row):
+        return "missing_or_invalid_email"
     if flags & HARD_REJECT_FLAGS:
         return "hard_quality_flag"
     if "vk_weak_contact_donor" in flags:
         return "weak_vk_contact_donor"
-    if flags & MANUAL_SEGMENT_FLAGS:
-        return "manual_business_segment"
     confidence = _confidence(row)
     if confidence < min_confidence:
         return "low_confidence"
     if "manual_review" in flags and confidence < max(min_confidence, 0.85):
         return "manual_review"
+    if other_base and is_in_other_base(row, *other_base):
+        return "already_in_other_base"
     return ""
 
 
-def _outreach_row(row: dict, email: str) -> dict:
+def _outreach_row(row: dict, email: str, signals: list[str], pitch: str) -> dict:
     return {
         "Email": email,
         "Название": row.get("name", ""),
-        "Тип клиента": row.get("client_type", ""),
+        "Сегмент": segment_title(row.get("client_type")),
+        "Все сегменты": _segments_all(row),
         "Город": row.get("city", ""),
         "Телефон": row.get("phone", ""),
         "Сайт": row.get("website", ""),
         "Соцсеть": row.get("social", ""),
         "Адрес": row.get("address", ""),
+        "Повод для КП": pitch,
+        "Сигналы": "; ".join(signals),
         "Источник": row.get("sources") or row.get("source", ""),
         "ID объекта": row.get("entity_id", ""),
         "Доверие": f"{_confidence(row):.2f}",
@@ -149,10 +182,7 @@ def _outreach_row(row: dict, email: str) -> dict:
 
 
 def _safe_row(row: dict, headers: list[str]) -> dict:
-    return {
-        header: neutralize_csv_formula(str(row.get(header) or ""))
-        for header in headers
-    }
+    return {header: neutralize_csv_formula(str(row.get(header) or "")) for header in headers}
 
 
 def _atomic_csv(path: Path, headers: list[str], rows: list[dict]) -> None:
@@ -160,11 +190,8 @@ def _atomic_csv(path: Path, headers: list[str], rows: list[dict]) -> None:
     tmp = path.with_name(path.name + ".tmp")
     with tmp.open("w", newline="", encoding="utf-8-sig") as handle:
         writer = csv.DictWriter(
-            handle,
-            fieldnames=headers,
-            delimiter=";",
-            quoting=csv.QUOTE_ALL,
-            extrasaction="ignore",
+            handle, fieldnames=headers, delimiter=";",
+            quoting=csv.QUOTE_ALL, extrasaction="ignore",
         )
         writer.writeheader()
         writer.writerows(_safe_row(row, headers) for row in rows)
@@ -195,10 +222,10 @@ def _atomic_xlsx(
         for column, header in enumerate(OUTREACH_HEADERS, start=1):
             sheet.cell(row=row_number, column=column, value=safe[header])
     sheet.freeze_panes = "A2"
-    sheet.auto_filter.ref = f"A1:N{max(1, len(rows) + 1)}"
-    widths = [30, 36, 18, 16, 22, 34, 30, 40, 18, 30, 12, 30, 44, 44]
-    for index, width in enumerate(widths, start=1):
-        sheet.column_dimensions[chr(64 + index)].width = width
+    last_column = get_column_letter(len(OUTREACH_HEADERS))
+    sheet.auto_filter.ref = f"A1:{last_column}{max(1, len(rows) + 1)}"
+    for index, width in enumerate(COLUMN_WIDTHS, start=1):
+        sheet.column_dimensions[get_column_letter(index)].width = width
 
     metadata = workbook.create_sheet("Метаданные")
     metadata_rows = [
@@ -210,7 +237,7 @@ def _atomic_xlsx(
         ("ready_rows", len(rows)),
         ("review_rows", review_count),
         ("min_confidence", min_confidence),
-        ("consumer", "Email_horeca_send"),
+        ("consumer", "manual_review_only"),
     ]
     for row_number, (key, value) in enumerate(metadata_rows, start=1):
         metadata.cell(row=row_number, column=1, value=key).font = Font(bold=True)
@@ -227,6 +254,9 @@ def build_outreach_exports(
     *,
     run_id: str = "",
     min_confidence: float | None = None,
+    signals_cache: dict | None = None,
+    other_base: tuple[set[str], set[str]] | None = None,
+    include_competitors: bool | None = None,
 ) -> dict:
     """Create ready/review artifacts and return their paths and counts."""
     source = Path(master_csv)
@@ -237,6 +267,11 @@ def build_outreach_exports(
         except ValueError:
             min_confidence = 0.70
     min_confidence = max(0.0, min(1.0, min_confidence))
+    if include_competitors is None:
+        include_competitors = (
+            os.getenv("OUTREACH_INCLUDE_COMPETITORS", "").strip().casefold() in TRUE_VALUES
+        )
+    cache = signals_cache or {}
 
     with source.open(newline="", encoding="utf-8-sig") as handle:
         master_rows = list(csv.DictReader(handle, delimiter=";"))
@@ -244,43 +279,45 @@ def build_outreach_exports(
     candidates: list[tuple[float, int, dict, str]] = []
     review_rows: list[dict] = []
     for row in master_rows:
-        reason = _review_reason(row, min_confidence)
+        reason = _review_reason(
+            row, min_confidence,
+            include_competitors=include_competitors, other_base=other_base,
+        )
         if reason:
             review_rows.append({**row, "review_reason": reason})
             continue
         email = _email_candidates(row)[0]
-        completeness = sum(bool(row.get(field)) for field in (
-            "phone", "website", "social", "address",
-        ))
+        completeness = sum(bool(row.get(field)) for field in ("phone", "website", "social", "address"))
         candidates.append((_confidence(row), completeness, row, email))
 
     ready_rows: list[dict] = []
+    by_segment: Counter = Counter()
+    by_signal: Counter = Counter()
     used_emails: set[str] = set()
     for _confidence_value, _completeness, row, email in sorted(
-        candidates,
-        key=lambda item: (-item[0], -item[1], item[3]),
+        candidates, key=lambda item: (-item[0], -item[1], item[3]),
     ):
         if email in used_emails:
             review_rows.append({**row, "review_reason": "duplicate_email"})
             continue
         used_emails.add(email)
-        ready_rows.append(_outreach_row(row, email))
+        signals, pitch = row_signals(row, cache)
+        ready_rows.append(_outreach_row(row, email, signals, pitch))
+        by_segment[str(row.get("client_type") or "")] += 1
+        by_signal.update(signals)
     ready_rows.sort(key=lambda row: (str(row["Город"]), str(row["Название"]), row["Email"]))
 
     ready_csv = target_dir / "outreach_ready.csv"
     ready_xlsx = target_dir / "outreach_ready.xlsx"
-    review_headers = list(master_rows[0].keys()) + ["review_reason"] if master_rows else ["review_reason"]
     review_csv = target_dir / "outreach_review.csv"
+    review_headers = list(master_rows[0].keys()) + ["review_reason"] if master_rows else ["review_reason"]
     generated_at = datetime.now().astimezone().isoformat(timespec="seconds")
     _atomic_csv(ready_csv, OUTREACH_HEADERS, ready_rows)
     _atomic_csv(review_csv, review_headers, review_rows)
     _atomic_xlsx(
-        ready_xlsx,
-        ready_rows,
-        generated_at=generated_at,
-        run_id=run_id,
-        min_confidence=min_confidence,
-        review_count=len(review_rows),
+        ready_xlsx, ready_rows,
+        generated_at=generated_at, run_id=run_id,
+        min_confidence=min_confidence, review_count=len(review_rows),
     )
     return {
         "ready_csv": str(ready_csv),
@@ -290,4 +327,6 @@ def build_outreach_exports(
         "review_rows": len(review_rows),
         "min_confidence": min_confidence,
         "approved_for_send": False,
+        "by_segment": dict(by_segment),
+        "by_signal": dict(by_signal),
     }
