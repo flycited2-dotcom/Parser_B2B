@@ -35,3 +35,49 @@ def test_env_paths_splits_semicolons(monkeypatch):
     assert env_paths("a.csv; ;b.csv") == ["a.csv", "b.csv"]
     monkeypatch.setenv("EXCLUDE_MASTERS", "")
     assert env_paths() == []
+
+
+def test_platform_hosts_outside_any_list_are_ignored_by_frequency(tmp_path):
+    hotels = tmp_path / "hotels.csv"
+    lines = ["name;website"] + [f"Отель {i};https://tvil-like.example/hotel{i}" for i in range(6)]
+    lines.append("Отель X;https://hotel-x.ru")
+    hotels.write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
+
+    _emails, domains, _warnings = load_exclusions([str(hotels)])
+
+    assert domains == {"hotel-x.ru"}
+
+
+def test_booking_and_messenger_hosts_never_count_as_corporate(tmp_path):
+    other = tmp_path / "other.csv"
+    other.write_text(
+        "name;website\nA;https://wa.me/79780000000\nB;https://booking.com/hotel/a\n"
+        "C;https://taplink.ru/c\nD;https://youtube.com/@d\n",
+        encoding="utf-8-sig",
+    )
+    _emails, domains, _warnings = load_exclusions([str(other)])
+    assert domains == set()
+
+
+def test_unreadable_master_is_a_warning_not_a_crash(tmp_path, monkeypatch):
+    import pathlib
+
+    locked = tmp_path / "locked.csv"
+    original = pathlib.Path.is_file
+
+    def fake_is_file(self):
+        if self == locked:
+            raise PermissionError(13, "Permission denied")
+        return original(self)
+
+    monkeypatch.setattr(pathlib.Path, "is_file", fake_is_file)
+    emails, domains, warnings = load_exclusions([str(locked)])
+    assert (emails, domains) == (set(), set())
+    assert len(warnings) == 1 and "locked.csv" in warnings[0]
+
+
+def test_master_without_known_columns_warns(tmp_path):
+    odd = tmp_path / "odd.csv"
+    odd.write_text("a;b\n1;2\n", encoding="utf-8-sig")
+    _emails, _domains, warnings = load_exclusions([str(odd)])
+    assert len(warnings) == 1 and "no email/website" in warnings[0]

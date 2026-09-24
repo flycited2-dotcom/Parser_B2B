@@ -15,8 +15,9 @@ import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Awaitable, Callable
-from urllib.parse import urlparse
 
+from config.hosts import host_of as website_host
+from config.hosts import is_non_company_url as is_social_url
 from config.segments import SEGMENT_BY_KEY
 from utils.safe_http import fetch_public_text
 
@@ -36,11 +37,6 @@ PITCH_BY_SIGNAL = {
 DEFAULT_PITCH = "Автоматизация/боты/CRM"
 NOT_CHECKED = "not_checked"
 
-SOCIAL_HOSTS = (
-    "vk.com", "vk.ru", "instagram.com", "t.me", "telegram.me", "ok.ru",
-    "facebook.com", "youtube.com", "taplink.cc", "taplink.ru", "wa.me",
-    "yandex.ru", "yandex.com", "2gis.ru", "avito.ru",
-)
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
@@ -72,23 +68,6 @@ PARKING_RE = re.compile(
 )
 
 Fetcher = Callable[..., Awaitable[str]]
-
-
-def website_host(url: object) -> str:
-    raw = str(url or "").strip()
-    if not raw:
-        return ""
-    try:
-        host = urlparse(raw if "://" in raw else "https://" + raw).hostname or ""
-    except ValueError:
-        return ""
-    host = host.casefold().rstrip(".")
-    return host[4:] if host.startswith("www.") else host
-
-
-def is_social_url(url: object) -> bool:
-    host = website_host(url)
-    return any(host == social or host.endswith("." + social) for social in SOCIAL_HOSTS)
 
 
 def order_signals(signals) -> list[str]:
