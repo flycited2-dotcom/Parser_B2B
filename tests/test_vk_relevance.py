@@ -13,7 +13,8 @@ def test_queries_cover_every_segment_keyword():
 
 def test_business_group_passes_gate():
     score, flags = _group_relevance(
-        {"name": "Автосервис Мотор", "activity": "Автомобили", "description": "Ремонт и ТО"},
+        {"name": "Автосервис Мотор", "activity": "Автомобили", "description": "Ремонт и ТО",
+         "site": "motor-avto.ru"},
         ["автосервис"],
     )
     assert score >= 0.7
@@ -56,3 +57,21 @@ def test_dry_run_never_emits_invalid_token_alert(monkeypatch):
     vk_groups._token_alert_sent = False
     vk_groups._maybe_alert_token_dead({"error_code": 5, "error_msg": "invalid access token"})
     assert vk_groups._token_alert_sent is False
+
+
+def test_vk_group_without_own_website_is_quarantined():
+    for site in ("", "https://instagram.com/lilia", "taplink.cc/lilia"):
+        _score, flags = _group_relevance(
+            {"name": "Салон красоты Лилия", "activity": "Красота", "site": site},
+            ["салон красоты"],
+        )
+        assert "vk_no_own_website" in flags
+        assert "vk_no_own_website" in VK_QUARANTINE_FLAGS
+
+
+def test_vk_group_with_own_website_is_not_quarantined():
+    _score, flags = _group_relevance(
+        {"name": "Салон красоты Лилия", "activity": "Красота", "site": "https://lilia-salon.ru"},
+        ["салон красоты"],
+    )
+    assert not set(flags) & VK_QUARANTINE_FLAGS

@@ -25,6 +25,7 @@ from urllib.parse import urlparse
 from utils.http_retry import http_request
 
 from utils.storage import save_item, normalize_phone
+from config.hosts import is_non_company_url
 from config.segments import DEFAULT_SEGMENT, normalize_segment, vk_queries
 from utils.geo_city import normalize_city_name
 
@@ -141,6 +142,9 @@ def _group_relevance(group: dict, matched_queries: list[str]) -> tuple[float, li
     if NOISE_PRIMARY_RE.search(f"{name} {activity}"):
         flags.append("vk_noise_primary")
         score = min(score, 0.25)
+    site = _clean_site(str(group.get("site") or ""))
+    if not site or is_non_company_url(site):
+        flags.append("vk_no_own_website")
     score = max(0.0, min(1.0, score))
     if score < 0.5:
         flags.append("manual_review")

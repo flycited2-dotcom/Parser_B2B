@@ -12,6 +12,9 @@ from __future__ import annotations
 VK_QUARANTINE_FLAGS = frozenset({
     "vk_no_primary_segment_signal",
     "vk_noise_primary",
+    # Spec §4.2: a VK-only row needs its own website; otherwise it can only
+    # enrich a cluster confirmed by OSM/Yandex (donor policy in merger).
+    "vk_no_own_website",
 })
 
 VK_RELEVANCE_FLAGS = frozenset({
