@@ -1,3 +1,4 @@
+from config.segments import SEGMENT_BY_KEY, SEGMENTS
 from parsers import yandex_maps
 
 
@@ -6,11 +7,15 @@ def test_coverage_includes_interior_and_resort_cities():
         assert city in yandex_maps.CITIES
 
 
-def test_queries_cover_additional_food_segments():
-    query_templates = {query for query, _ in yandex_maps.QUERIES}
-    assert "пекарня {city}" in query_templates
-    assert "суши {city}" in query_templates
-    assert "доставка еды {city}" in query_templates
+def test_queries_cover_every_segment_without_food():
+    templates = {query for query, _ in yandex_maps.QUERIES}
+    for segment in SEGMENTS:
+        for query in segment.yandex_queries:
+            assert f"{query} {{city}}" in templates
+    assert len(yandex_maps.QUERIES) == 60
+    assert all(key in SEGMENT_BY_KEY for _, key in yandex_maps.QUERIES)
+    assert yandex_maps.EXTRA_QUERIES_GLOBAL == []
+    assert not any("ресторан" in query for query, _ in yandex_maps.QUERIES)
 
 
 def test_extract_org_id_uses_terminal_numeric_identifier():

@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from urllib.parse import quote_plus, urlparse
 
+from config.segments import yandex_queries
 from utils.storage import save_item
 
 # Typical URL: /maps/org/fabrikant/1324964934/. Requiring at least six
@@ -104,30 +105,10 @@ CITIES = [
     "Солнечногорское", "Николаевка", "Балаклава",
 ]
 
-# Категории берём шире — в выдачу попадает всё схожее
-QUERIES = [
-    ("ресторан {city}", "ресторан"),
-    ("кафе {city}", "кафе"),
-    ("бар {city}", "бар"),
-    ("паб {city}", "паб"),
-    ("ночной клуб {city}", "клуб"),
-    ("кофейня {city}", "кофейня"),
-    ("столовая {city}", "столовая"),
-    ("фудкорт {city}", "фудкорт"),
-    ("пиццерия {city}", "пиццерия"),
-    ("кондитерская {city}", "кондитерская"),
-    ("фастфуд {city}", "фастфуд"),
-    ("пекарня {city}", "кондитерская"),
-    ("бургерная {city}", "фастфуд"),
-    ("шаурма {city}", "фастфуд"),
-    ("суши {city}", "ресторан"),
-    ("доставка еды {city}", "фастфуд"),
-]
+# 20 сегментов × 3 запроса = 60 шаблонов; сегмент берётся из запроса.
+QUERIES = yandex_queries()
 
-EXTRA_QUERIES_GLOBAL = [
-    ("суши бар Крым", "ресторан", "Крым"),
-    ("доставка еды Крым", "фастфуд", "Крым"),
-]
+EXTRA_QUERIES_GLOBAL: list[tuple[str, str, str]] = []
 
 # main._source_limits temporarily truncates public lists for legacy parsers.
 # Keep immutable originals so Yandex offsets can select later production batches.
