@@ -22,13 +22,16 @@ YCLIENTS = (
 
 
 def _fake_fetch(pages, calls=None):
+    """Fake (status, text) fetcher; an unknown URL is unreachable (connection error)."""
     async def fetch(url, **kwargs):
         if calls is not None:
             calls.append(url)
-        value = pages.get(url, "")
+        value = pages.get(url, OSError("connection refused"))
         if isinstance(value, Exception):
             raise value
-        return value
+        if isinstance(value, tuple):
+            return value
+        return 200, value
     return fetch
 
 
@@ -58,7 +61,7 @@ def test_pitch_follows_priority():
 def test_http_only_site_is_no_https_not_dead():
     fetch = _fake_fetch({"https://okna.ru/": OSError("ssl"), "http://okna.ru/": MODERN})
     result = asyncio.run(ws.probe_site("okna.ru", booking_relevant=False, fetch=fetch, now=NOW))
-    assert result == {"signals": ["no_https"], "checked_at": "2026-09-24T00:00:00+00:00"}
+    assert result == {"signals": ["no_https"], "checked_at": "2026-09-24T00:00:00+00:00", "status": "ok"}
 
 
 def test_dead_and_parked_sites():
@@ -90,8 +93,8 @@ def test_refresh_respects_budget_freshness_and_social_links(tmp_path):
     master = tmp_path / "master_all.csv"
     rows = [
         {"name": "Fresh", "website": "https://fresh.ru", "client_type": "torgovlya"},
-        {"name": "Stale", "website": "https://stale.ru", "client_type": "krasota"},
-        {"name": "New1", "website": "https://new1.ru", "client_type": "torgovlya"},
+        {"name": "Stale", "website": "https://stale.ru", "client_type": "torgovlya"},
+        {"name": "New1", "website": "https://new1.ru", "client_type": "krasota"},
         {"name": "New2", "website": "https://new2.ru", "client_type": "torgovlya"},
         {"name": "Social", "website": "https://vk.com/x", "client_type": "torgovlya"},
     ]
@@ -108,14 +111,108 @@ def test_refresh_respects_budget_freshness_and_social_links(tmp_path):
 
     stats = asyncio.run(ws.refresh_signals(
         str(master), str(cache_path), max_sites=2,
-        fetch=_fake_fetch({"https://stale.ru/": MODERN, "https://new1.ru/": MODERN}, calls),
+        fetch=_fake_fetch({"https://new1.ru/": MODERN, "https://new2.ru/": MODERN}, calls),
         now=NOW,
     ))
 
-    assert stats == {"sites": 4, "fresh": 1, "checked": 2, "pending": 1}
+    assert stats == {"sites": 4, "fresh": 1, "checked": 2, "pending": 1, "outage_suspected": False}
     saved = json.loads(cache_path.read_text(encoding="utf-8"))
     assert saved["fresh.ru"]["checked_at"] == "2026-09-20T00:00:00+00:00"
-    assert saved["stale.ru"]["signals"] == ["no_online_booking"]
-    assert saved["new1.ru"]["signals"] == []
-    assert "new2.ru" not in saved
-    assert calls == ["https://stale.ru/", "https://new1.ru/"]
+    assert saved["stale.ru"]["signals"] == ["no_mobile"]
+    assert saved["new1.ru"]["signals"] == ["no_online_booking"]
+    assert saved["new2.ru"]["signals"] == []
+    # Never-checked hosts go first; the expired one waits for the next run.
+    assert calls == ["https://new1.ru/", "https://new2.ru/"]
+
+
+def test_bot_wall_is_not_reported_as_dead():
+    fetch = _fake_fetch({"https://guarded.ru/": (403, ""), "http://guarded.ru/": (403, "")})
+    result = asyncio.run(ws.probe_site("guarded.ru", booking_relevant=False, fetch=fetch, now=NOW))
+    assert "site_dead" not in result["signals"]
+    assert result["status"] == "blocked"
+    assert ws.row_signals({"website": "https://guarded.ru"}, {"guarded.ru": result}) == (
+        ["not_checked"], "Автоматизация/боты/CRM",
+    )
+
+
+def test_dns_failure_and_server_errors_are_dead():
+    from utils.net_safety import UnsafeURLError
+
+    dns = UnsafeURLError("DNS resolution failed for gone.ru: getaddrinfo failed")
+    gone = asyncio.run(ws.probe_site(
+        "gone.ru", booking_relevant=False,
+        fetch=_fake_fetch({"https://gone.ru/": dns, "http://gone.ru/": dns}), now=NOW,
+    ))
+    broken = asyncio.run(ws.probe_site(
+        "broken.ru", booking_relevant=False,
+        fetch=_fake_fetch({"https://broken.ru/": (503, ""), "http://broken.ru/": (503, "")}), now=NOW,
+    ))
+    assert gone["signals"] == ["site_dead"]
+    assert broken["signals"] == ["site_dead"]
+
+
+def test_non_html_homepage_is_unknown_not_dead():
+    fetch = _fake_fetch({"https://pdf.ru/": (200, ""), "http://pdf.ru/": (200, "")})
+    result = asyncio.run(ws.probe_site("pdf.ru", booking_relevant=False, fetch=fetch, now=NOW))
+    assert "site_dead" not in result["signals"]
+    assert result["status"] == "unknown"
+
+
+def _write_rows(path, rows):
+    with path.open("w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.DictWriter(handle, fieldnames=FIELDS, delimiter=";")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def test_dead_entries_are_rechecked_after_a_week_but_ok_entries_last_a_month(tmp_path):
+    master = tmp_path / "master_all.csv"
+    _write_rows(master, [
+        {"name": "Dead", "website": "https://dead.ru", "client_type": "torgovlya", "email": "a@dead.ru"},
+        {"name": "Ok", "website": "https://ok.ru", "client_type": "torgovlya", "email": "a@ok.ru"},
+    ])
+    cache_path = tmp_path / "web_signals.json"
+    cache_path.write_text(json.dumps({
+        "dead.ru": {"signals": ["site_dead"], "checked_at": "2026-09-14T00:00:00+00:00"},
+        "ok.ru": {"signals": [], "checked_at": "2026-09-14T00:00:00+00:00"},
+    }), encoding="utf-8")
+    calls = []
+    asyncio.run(ws.refresh_signals(
+        str(master), str(cache_path), fetch=_fake_fetch({"https://dead.ru/": MODERN}, calls), now=NOW,
+    ))
+    assert calls == ["https://dead.ru/"]
+
+
+def test_mass_unreachable_batch_is_not_persisted_as_dead(tmp_path):
+    master = tmp_path / "master_all.csv"
+    _write_rows(master, [
+        {"name": f"C{i}", "website": f"https://c{i}.ru", "client_type": "torgovlya", "email": f"a@c{i}.ru"}
+        for i in range(10)
+    ])
+    cache_path = tmp_path / "web_signals.json"
+    stats = asyncio.run(ws.refresh_signals(
+        str(master), str(cache_path), fetch=_fake_fetch({}), now=NOW,
+    ))
+    assert stats["outage_suspected"] is True
+    assert json.loads(cache_path.read_text(encoding="utf-8")) == {}
+
+
+def test_budget_prefers_outreach_eligible_never_checked_hosts(tmp_path):
+    master = tmp_path / "master_all.csv"
+    _write_rows(master, [
+        {"name": "NoEmail", "website": "https://a.ru", "client_type": "torgovlya"},
+        {"name": "Stale", "website": "https://b.ru", "client_type": "torgovlya", "email": "x@b.ru"},
+        {"name": "Fresh", "website": "https://c.ru", "client_type": "torgovlya", "email": "x@c.ru"},
+        {"name": "Chain", "website": "https://d.ru", "client_type": "torgovlya", "email": "x@d.ru",
+         "quality_flags": "excluded_chain"},
+    ])
+    cache_path = tmp_path / "web_signals.json"
+    cache_path.write_text(json.dumps({
+        "b.ru": {"signals": [], "checked_at": "2026-07-01T00:00:00+00:00"},
+    }), encoding="utf-8")
+    calls = []
+    asyncio.run(ws.refresh_signals(
+        str(master), str(cache_path), max_sites=2,
+        fetch=_fake_fetch({"https://b.ru/": MODERN, "https://c.ru/": MODERN}, calls), now=NOW,
+    ))
+    assert calls == ["https://c.ru/", "https://b.ru/"]

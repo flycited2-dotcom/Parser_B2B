@@ -70,6 +70,33 @@ async def fetch_public_text(
     URL and every redirect.  It is useful for provider-specific fallbacks such
     as VK where leaving the provider domain is never required.
     """
+    status, text = await fetch_public_response(
+        url,
+        timeout_seconds=timeout_seconds,
+        max_response_bytes=max_response_bytes,
+        max_redirects=max_redirects,
+        headers=headers,
+        allowed_content_types=allowed_content_types,
+        allowed_hosts=allowed_hosts,
+    )
+    return text if 0 < status < 400 else ""
+
+
+async def fetch_public_response(
+    url: str,
+    *,
+    timeout_seconds: float = 15,
+    max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+    max_redirects: int = DEFAULT_MAX_REDIRECTS,
+    headers: Mapping[str, str] | None = None,
+    allowed_content_types: Collection[str] = ("text/html", "xml", "text/plain"),
+    allowed_hosts: Collection[str] | None = None,
+) -> tuple[int, str]:
+    """Like :func:`fetch_public_text`, but also return the final HTTP status.
+
+    The text is empty for error statuses, disallowed content types and
+    oversized bodies; status 0 means the redirect limit was exhausted.
+    """
     if max_response_bytes < 1:
         raise ValueError("max_response_bytes must be positive")
     if max_redirects < 0:
@@ -97,31 +124,32 @@ async def fetch_public_text(
                 )
 
             async with session.get(current, allow_redirects=False) as response:
-                if response.status in {301, 302, 303, 307, 308}:
+                status = response.status
+                if status in {301, 302, 303, 307, 308}:
                     location = response.headers.get("Location", "")
                     if not location:
-                        return ""
+                        return status, ""
                     current = urljoin(current, location)
                     continue
-                if response.status >= 400:
-                    return ""
+                if status >= 400:
+                    return status, ""
 
                 content_type = response.headers.get("Content-Type", "").casefold()
                 if allowed_content_types and not any(
                     marker.casefold() in content_type for marker in allowed_content_types
                 ):
-                    return ""
+                    return status, ""
                 try:
                     declared_size = int(response.headers.get("Content-Length", "0"))
                 except ValueError:
                     declared_size = 0
                 if declared_size > max_response_bytes:
-                    return ""
+                    return status, ""
 
                 body = await response.content.read(max_response_bytes + 1)
                 if len(body) > max_response_bytes:
-                    return ""
+                    return status, ""
                 encoding = response.charset or "utf-8"
-                return body.decode(encoding, errors="replace")
+                return status, body.decode(encoding, errors="replace")
 
-    return ""
+    return 0, ""

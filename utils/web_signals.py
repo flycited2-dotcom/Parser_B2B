@@ -18,8 +18,18 @@ from typing import Awaitable, Callable
 
 from config.hosts import host_of as website_host
 from config.hosts import is_non_company_url as is_social_url
-from config.segments import SEGMENT_BY_KEY
-from utils.safe_http import fetch_public_text
+from config.segments import EXCLUDED_FLAGS, SEGMENT_BY_KEY
+from utils.net_safety import UnsafeURLError
+from utils.safe_http import fetch_public_response
+
+# 401/403/429 — бот-защита (DDoS-Guard, Qrator, Cloudflare), а не мёртвый сайт.
+BLOCKED_STATUSES = frozenset({401, 403, 429})
+MISSING_STATUSES = frozenset({404, 410})
+DEAD_KINDS = frozenset({"unreachable", "error"})
+RECHECK_DAYS = 7
+# Если почти вся пачка «мертва», вероятнее сбой нашей сети — не сохраняем.
+OUTAGE_MIN_BATCH = 10
+OUTAGE_DEAD_RATIO = 0.8
 
 SIGNAL_ORDER = (
     "no_website", "site_dead", "no_https", "no_mobile",
@@ -67,7 +77,7 @@ PARKING_RE = re.compile(
     re.IGNORECASE,
 )
 
-Fetcher = Callable[..., Awaitable[str]]
+Fetcher = Callable[..., Awaitable[tuple[int, str]]]
 
 
 def order_signals(signals) -> list[str]:
@@ -101,39 +111,66 @@ def detect_html_signals(html: str, *, booking_relevant: bool, now_year: int) -> 
     return signals
 
 
-async def _try_fetch(fetch: Fetcher, url: str) -> str:
+async def _attempt(fetch: Fetcher, url: str) -> tuple[str, str]:
+    """(kind, html): ok | blocked | error | unreachable | unknown."""
     try:
-        return await fetch(
+        status, html = await fetch(
             url,
             timeout_seconds=15,
             max_response_bytes=2 * 1024 * 1024,
             headers={"User-Agent": UA},
             allowed_content_types=("text/html",),
         )
+    except OSError:  # DNS/TCP/TLS failures and timeouts
+        return "unreachable", ""
+    except UnsafeURLError as exc:
+        return ("unreachable", "") if "DNS resolution failed" in str(exc) else ("unknown", "")
     except Exception:
-        return ""
+        return "unknown", ""
+    if status in BLOCKED_STATUSES:
+        return "blocked", ""
+    if status in MISSING_STATUSES or status >= 500:
+        return "error", ""
+    if html:
+        return "ok", html
+    return "unknown", ""
+
+
+def _result(signals: list[str], status: str, checked_at: str) -> dict:
+    return {"signals": order_signals(signals), "checked_at": checked_at, "status": status}
 
 
 async def probe_site(
     website: str,
     *,
     booking_relevant: bool,
-    fetch: Fetcher = fetch_public_text,
+    fetch: Fetcher = fetch_public_response,
     now: datetime | None = None,
 ) -> dict:
     now = now or datetime.now(timezone.utc)
     checked_at = now.isoformat(timespec="seconds")
     host = website_host(website)
     signals: list[str] = []
-    html = await _try_fetch(fetch, f"https://{host}/")
-    if not html:
-        html = await _try_fetch(fetch, f"http://{host}/")
-        if html:
-            signals.append("no_https")
-    if not html or PARKING_RE.search(html):
-        return {"signals": ["site_dead"], "checked_at": checked_at}
+    kind, html = await _attempt(fetch, f"https://{host}/")
+    if kind == "blocked":
+        # A bot wall says nothing about the site itself: no claim.
+        return _result([], "blocked", checked_at)
+    if kind != "ok":
+        https_failed = kind in DEAD_KINDS
+        http_kind, html = await _attempt(fetch, f"http://{host}/")
+        if http_kind == "ok":
+            if https_failed:
+                signals.append("no_https")
+        elif http_kind == "blocked":
+            return _result([], "blocked", checked_at)
+        elif https_failed and http_kind in DEAD_KINDS:
+            return _result(["site_dead"], "dead", checked_at)
+        else:
+            return _result([], "unknown", checked_at)
+    if PARKING_RE.search(html):
+        return _result(["site_dead"], "dead", checked_at)
     signals.extend(detect_html_signals(html, booking_relevant=booking_relevant, now_year=now.year))
-    return {"signals": order_signals(signals), "checked_at": checked_at}
+    return _result(signals, "ok", checked_at)
 
 
 def load_cache(path: str) -> dict[str, dict]:
@@ -152,6 +189,10 @@ def _save_cache(path: str, cache: dict) -> None:
     os.replace(tmp, target)
 
 
+def _entry_status(entry: dict) -> str:
+    return str(entry.get("status") or ("dead" if "site_dead" in (entry.get("signals") or []) else "ok"))
+
+
 def _is_fresh(entry: dict, now: datetime, max_age_days: int) -> bool:
     try:
         checked = datetime.fromisoformat(str(entry.get("checked_at")))
@@ -159,21 +200,36 @@ def _is_fresh(entry: dict, now: datetime, max_age_days: int) -> bool:
         return False
     if checked.tzinfo is None:
         checked = checked.replace(tzinfo=timezone.utc)
-    return now - checked < timedelta(days=max_age_days)
+    # Negative or inconclusive verdicts are re-checked sooner: a transient
+    # outage must not pin "Сайт не работает" onto a company for a month.
+    days = max_age_days if _entry_status(entry) == "ok" else min(max_age_days, RECHECK_DAYS)
+    return now - checked < timedelta(days=days)
 
 
-def _site_targets(master_csv: str) -> dict[str, bool]:
-    """host → booking_relevant (True, если хотя бы одна компания домена такая)."""
+def _row_eligible(row: dict) -> bool:
+    """Whether the row can reach outreach: target segment, an email, no exclusion."""
+    if str(row.get("client_type") or "") not in SEGMENT_BY_KEY:
+        return False
+    if "@" not in f"{row.get('email') or ''}{row.get('all_emails') or ''}":
+        return False
+    flags = {flag.strip() for flag in str(row.get("quality_flags") or "").split("|")}
+    return not flags & EXCLUDED_FLAGS
+
+
+def _site_targets(master_csv: str) -> dict[str, dict]:
+    """host → {"booking": bool, "eligible": bool} aggregated over its companies."""
     with open(master_csv, newline="", encoding="utf-8-sig") as handle:
         rows = list(csv.DictReader(handle, delimiter=";"))
-    targets: dict[str, bool] = {}
+    targets: dict[str, dict] = {}
     for row in rows:
         website = str(row.get("website") or "").strip()
         host = website_host(website)
         if not host or is_social_url(website):
             continue
         segment = SEGMENT_BY_KEY.get(str(row.get("client_type") or ""))
-        targets[host] = targets.get(host, False) or bool(segment and segment.booking_relevant)
+        target = targets.setdefault(host, {"booking": False, "eligible": False})
+        target["booking"] = target["booking"] or bool(segment and segment.booking_relevant)
+        target["eligible"] = target["eligible"] or _row_eligible(row)
     return targets
 
 
@@ -184,29 +240,43 @@ async def refresh_signals(
     max_sites: int = 400,
     max_age_days: int = 30,
     parallel: int = 8,
-    fetch: Fetcher = fetch_public_text,
+    fetch: Fetcher = fetch_public_response,
     now: datetime | None = None,
 ) -> dict:
     now = now or datetime.now(timezone.utc)
     cache = load_cache(cache_path)
     targets = _site_targets(master_csv)
     stale = [host for host in targets if not _is_fresh(cache.get(host) or {}, now, max_age_days)]
+    # Outreach-eligible first, then never-checked, then the oldest check.
+    stale.sort(key=lambda host: (
+        not targets[host]["eligible"],
+        host in cache,
+        str((cache.get(host) or {}).get("checked_at") or ""),
+    ))
     batch = stale[:max_sites] if max_sites else stale
     semaphore = asyncio.Semaphore(max(1, parallel))
+    results: dict[str, dict] = {}
 
     async def _one(host: str) -> None:
         async with semaphore:
-            cache[host] = await probe_site(
-                host, booking_relevant=targets[host], fetch=fetch, now=now
+            results[host] = await probe_site(
+                host, booking_relevant=targets[host]["booking"], fetch=fetch, now=now
             )
 
     await asyncio.gather(*(_one(host) for host in batch))
+    dead = [host for host, result in results.items() if result["status"] == "dead"]
+    outage = len(results) >= OUTAGE_MIN_BATCH and len(dead) / len(results) >= OUTAGE_DEAD_RATIO
+    for host, result in results.items():
+        if outage and result["status"] == "dead":
+            continue  # most likely our network, not the sites
+        cache[host] = result
     _save_cache(cache_path, cache)
     return {
         "sites": len(targets),
         "fresh": len(targets) - len(stale),
         "checked": len(batch),
         "pending": len(stale) - len(batch),
+        "outage_suspected": outage,
     }
 
 
@@ -216,7 +286,7 @@ def row_signals(row: dict, cache: dict) -> tuple[list[str], str]:
         signals = ["no_website"]
     else:
         entry = cache.get(website_host(website))
-        if not entry:
+        if not entry or _entry_status(entry) in {"blocked", "unknown"}:
             return [NOT_CHECKED], DEFAULT_PITCH
         signals = order_signals(entry.get("signals") or [])
     return signals, pick_pitch(signals)
