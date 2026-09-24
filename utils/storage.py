@@ -4,6 +4,7 @@ import os
 import re
 from datetime import datetime
 
+from config.segments import exclusion_flags
 from utils.categories import normalize as normalize_category
 from utils import dedup, progress
 from utils.csv_safety import neutralize_csv_formula
@@ -119,6 +120,13 @@ def _prepare_item(item: dict) -> dict:
         cleaned["phone"] = normalize_phone(cleaned["phone"])
     if not cleaned.get("client_type"):
         cleaned["client_type"] = normalize_category(cleaned.get("category", ""))
+    extra_flags = exclusion_flags(
+        cleaned.get("name", ""),
+        f"{cleaned.get('category', '')} {cleaned.get('raw_category', '')}",
+    )
+    if extra_flags:
+        existing_flags = [flag for flag in cleaned.get("quality_flags", "").split("|") if flag]
+        cleaned["quality_flags"] = "|".join(dict.fromkeys(existing_flags + extra_flags))
     cleaned["provenance"] = provenance_for_rows([cleaned])
     return cleaned
 

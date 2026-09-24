@@ -363,3 +363,55 @@ def vk_queries() -> list[tuple[str, str]]:
 
 def crawler_triggers() -> tuple[str, ...]:
     return tuple(dict.fromkeys(fold(alias) for segment in SEGMENTS for alias in segment.aliases))
+
+
+# --- Исключения -----------------------------------------------------------
+# Сети и федеральные бренды: филиалы не покупают разработку локально.
+EXCLUDE_BRANDS: tuple[str, ...] = (
+    "магнит", "пятерочка", "перекресток", "ашан", "пуд", "fix price",
+    "фикс прайс", "мтс", "мегафон", "билайн", "tele2", "теле2",
+    "win mobile", "волна мобайл", "сбербанк", "сбер", "рнкб", "генбанк",
+    "втб", "почта банк", "dns", "эльдорадо", "м.видео", "мвидео",
+    "спортмастер", "wildberries", "вайлдберриз", "ozon", "озон",
+    "яндекс маркет", "сдэк", "cdek", "boxberry", "деловые линии", "пэк",
+)
+EXCLUDE_EMAIL_DOMAINS: tuple[str, ...] = (
+    "magnit.ru", "x5.ru", "mts.ru", "megafon.ru", "beeline.ru", "tele2.ru",
+    "sberbank.ru", "sber.ru", "rncb.ru", "genbank.ru", "vtb.ru",
+    "pochtabank.ru", "dns-shop.ru", "eldorado.ru", "mvideo.ru",
+    "sportmaster.ru", "fix-price.com", "wildberries.ru", "ozon.ru",
+    "cdek.ru", "boxberry.ru", "dellin.ru", "pecom.ru",
+)
+EXCLUDED_FLAGS = frozenset({"excluded_chain", "excluded_gov", "excluded_other_base_type"})
+
+_BRAND_RE = re.compile(
+    r"(?<!\w)(?:" + "|".join(re.escape(fold(brand)) for brand in EXCLUDE_BRANDS) + r")(?!\w)"
+)
+_GOV_RE = re.compile(
+    r"\b(?:администраци\w*|мфц|госуслуг\w*|прокуратур\w*|полици\w*|мвд|"
+    r"министерств\w*|росреестр\w*|налогов\w+ инспекци\w*|пенсионн\w+ фонд\w*|"
+    r"социальн\w+ фонд\w*|гбу\w*|мбу\w*|гбоу|мбоу|мбдоу|гбдоу|гауз|муп|гуп|"
+    r"фгуп|фгбу\w*|суд|банкомат\w*|платежн\w+ терминал\w*|почта россии|"
+    r"отделение почтов\w+ связи)\b"
+)
+# HoReCa и размещение уже покрыты двумя другими базами.
+_OTHER_BASE_RE = re.compile(
+    r"\b(?:ресторан\w*|кафе|бар|паб|кофейн\w*|столовая|пиццери\w*|бургерн\w*|"
+    r"шаурм\w*|суши|фудкорт\w*|кондитерск\w*|пекарн\w*|отел\w*|гостиниц\w*|"
+    r"мини-гостиниц\w*|гостев\w+\s+дом\w*|хостел\w*|пансионат\w*|санатори\w*|"
+    r"база отдыха)\b"
+)
+
+
+def exclusion_flags(name: object, category_text: object = "") -> list[str]:
+    """Флаги исключения по названию (+ рубрике/категории для gov/HoReCa)."""
+    name_text = fold(name)
+    full_text = f"{name_text} {fold(category_text)}".strip()
+    flags: list[str] = []
+    if _BRAND_RE.search(name_text):
+        flags.append("excluded_chain")
+    if _GOV_RE.search(full_text):
+        flags.append("excluded_gov")
+    if _OTHER_BASE_RE.search(full_text):
+        flags.append("excluded_other_base_type")
+    return flags
