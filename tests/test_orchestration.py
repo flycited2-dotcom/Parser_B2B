@@ -202,7 +202,7 @@ def test_handoff_is_atomic_idempotent_and_never_auto_approved(monkeypatch, tmp_p
     with quarantine.open("w", newline="", encoding="utf-8-sig") as handle:
         writer = csv.writer(handle, delimiter=";")
         writer.writerow(["name", "quarantine_reason"])
-        writer.writerow(["Шум", "vk_missing_primary_food_signal"])
+        writer.writerow(["Шум", "vk_missing_primary_segment_signal"])
 
     manifest = main._write_handoff(
         config, output_dir, str(master), "", 1, failures=[]

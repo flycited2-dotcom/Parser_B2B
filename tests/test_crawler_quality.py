@@ -40,7 +40,7 @@ def test_crawler_filters_every_weak_vk_seed_but_keeps_trusted_rows(tmp_path):
         },
         {
             "source": "OSM", "website": "https://stale-noise.example",
-            "quality_flags": "vk_accommodation_primary",
+            "quality_flags": "vk_noise_primary",
         },
     ])
     path = tmp_path / "seeds.csv"
@@ -56,7 +56,7 @@ def test_weak_only_crawler_run_stops_before_network(monkeypatch, tmp_path):
     path = tmp_path / "weak.csv"
     _write_seed_csv(path, [{
         "source": "VK", "website": "https://hotel.example",
-        "quality_flags": "vk_accommodation_primary",
+        "quality_flags": "vk_noise_primary",
     }])
     monkeypatch.setattr(crawler, "_latest_csv", lambda: str(path))
 
@@ -75,8 +75,8 @@ def test_quality_policy_requires_actual_vk_source_for_quarantine():
     from utils.quality import is_master_anchor
 
     assert is_master_anchor({
-        "source": "OSM", "quality_flags": "vk_accommodation_primary",
+        "source": "OSM", "quality_flags": "vk_noise_primary",
     })
     assert not is_master_anchor({
-        "source": "VK", "quality_flags": "vk_accommodation_primary",
+        "source": "VK", "quality_flags": "vk_noise_primary",
     })

@@ -61,7 +61,7 @@ def _stage_quarantine(path: str, clusters: list[list[dict]]) -> str:
             writer.writeheader()
             for cluster in clusters:
                 row = canonicalize_cluster(cluster, FIELDNAMES)
-                row["quarantine_reason"] = "vk_missing_primary_food_signal"
+                row["quarantine_reason"] = "vk_missing_primary_segment_signal"
                 writer.writerow({
                     header: neutralize_csv_formula(str(row.get(header) or ""))
                     for header in headers

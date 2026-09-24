@@ -288,7 +288,7 @@ def test_master_quarantines_standalone_vk_noise_but_keeps_raw_file(tmp_path):
         {
             "source": "VK", "source_id": "1", "name": "Отель Море",
             "city": "Ялта", "email": "hotel@example.org",
-            "quality_flags": "vk_no_primary_food_signal|vk_accommodation_primary",
+            "quality_flags": "vk_no_primary_segment_signal|vk_noise_primary",
         },
         {
             "source": "VK", "source_id": "2", "name": "Кафе Море",
@@ -310,7 +310,7 @@ def test_master_quarantines_standalone_vk_noise_but_keeps_raw_file(tmp_path):
         quarantined = list(csv.DictReader(handle, delimiter=";"))
     assert len(quarantined) == 1
     assert quarantined[0]["name"] == "Отель Море"
-    assert quarantined[0]["quarantine_reason"] == "vk_missing_primary_food_signal"
+    assert quarantined[0]["quarantine_reason"] == "vk_missing_primary_segment_signal"
 
 
 def test_vk_weak_observation_can_enrich_strong_cross_source_anchor(tmp_path):
@@ -325,7 +325,7 @@ def test_vk_weak_observation_can_enrich_strong_cross_source_anchor(tmp_path):
             "source": "VK", "source_id": "9", "name": "Маяк",
             "city": "Ялта", "phone": "+7 978 999-88-77",
             "email": "info@mayak.example",
-            "quality_flags": "vk_no_primary_food_signal|manual_review",
+            "quality_flags": "vk_no_primary_segment_signal|manual_review",
         },
     ], FIELDNAMES)
 
@@ -342,7 +342,7 @@ def test_vk_weak_observation_can_enrich_strong_cross_source_anchor(tmp_path):
         "vk_weak_email_donor",
         "vk_weak_observation_linked",
     }
-    assert "vk_no_primary_food_signal" in rows[0]["provenance"]
+    assert "vk_no_primary_segment_signal" in rows[0]["provenance"]
 
 
 def test_vk_weak_observation_cannot_override_anchor_contacts(tmp_path):
@@ -361,7 +361,7 @@ def test_vk_weak_observation_cannot_override_anchor_contacts(tmp_path):
             "city": "Ялта", "phone": "+7 978 999-99-99",
             "email": "hotel@noise.example", "website": "https://noise.example",
             "address": "улица Морская, 10",
-            "quality_flags": "vk_accommodation_primary|vk_no_primary_food_signal",
+            "quality_flags": "vk_noise_primary|vk_no_primary_segment_signal",
         },
     ], FIELDNAMES)
 
@@ -390,7 +390,7 @@ def test_cross_source_merge_does_not_pre_poison_anchor_from_weak_vk(
         "source": "VK", "source_id": "12", "name": "Кафе Прибой",
         "city": "Ялта", "address": "улица Морская, 12",
         "email": "weak@hotel.example",
-        "quality_flags": "vk_accommodation_primary|vk_no_primary_food_signal",
+        "quality_flags": "vk_noise_primary|vk_no_primary_segment_signal",
     })
 
     storage.cross_source_merge()

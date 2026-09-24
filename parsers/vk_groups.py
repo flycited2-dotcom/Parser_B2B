@@ -1,4 +1,4 @@
-"""VK API — поиск групп общепита/отдыха (рестораны, кафе, бары, клубы) в Крыму.
+"""VK API — поиск групп коммерческих компаний Крыма по B2B-сегментам.
 
 ENV: VK_TOKEN (user access_token со scope groups). Без токена — пропуск.
 
@@ -10,7 +10,7 @@ ENV: VK_TOKEN (user access_token со scope groups). Без токена — п�
 5. save_item — persistent dedup сам отсеет повторы между прогонами.
 
 Широкая выдача сохраняется в raw result с confidence/quality flags. При сборке
-master отдельные VK-кандидаты без первичного food-сигнала уходят в
+master отдельные VK-кандидаты без сегментного сигнала уходят в
 master_quarantine.csv; если такой VK-контакт надёжно сопоставился с
 OSM/Яндекс/Crawler-объектом, он может обогатить сильную сущность.
 """
@@ -25,7 +25,7 @@ from urllib.parse import urlparse
 from utils.http_retry import http_request
 
 from utils.storage import save_item, normalize_phone
-from utils.categories import normalize as normalize_category
+from config.segments import DEFAULT_SEGMENT, normalize_segment, vk_queries
 from utils.geo_city import normalize_city_name
 
 API = "https://api.vk.com/method"
@@ -51,11 +51,16 @@ VK_CITIES = {
     5490701: "Алупка",
 }
 
-QUERIES = [
-    "ресторан", "кафе", "бар", "паб", "клуб", "ночной клуб",
-    "кофейня", "столовая", "фудкорт", "пиццерия", "кондитерская",
-    "фастфуд", "суши", "доставка еды",
-]
+QUERY_SEGMENT: dict[str, str] = dict(vk_queries())
+QUERIES: list[str] = list(QUERY_SEGMENT)
+
+# Сообщества-«шум»: барахолки, новости, паблики — не компании.
+NOISE_PRIMARY_RE = re.compile(
+    r"\b(?:подслушано|барахолк\w*|объявлени\w*|вакансии|работа в|новости|"
+    r"сплетни|знакомств\w*|выпускник\w*|волонт\w*|благотворительн\w*|"
+    r"приют\w*|клуб любителей|фан-?клуб\w*|типичн\w*|мемы|отдам даром|помогите)\b",
+    re.IGNORECASE,
+)
 
 EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
 EMAIL_BLOCKLIST = ("noreply", "no-reply", "example.", "@vk.com", "@vkontakte")
@@ -67,78 +72,6 @@ PREFERRED_PREFIXES = ("reservation", "reservations", "booking", "reserve", "book
 # VK API error codes, означающие что VK_TOKEN недействителен.
 _TOKEN_DEAD_CODES = (5, 15, 27, 28)
 _token_alert_sent = False  # один алерт за прогон
-
-POSITIVE_TERMS = (
-    "ресторан", "кафе", "кофейн", "столов", "фудкорт", "пицц", "суши",
-    "ролл", "бургер", "шаурм", "кондитер", "пекар", "выпеч", "фастфуд",
-    "fast food", "food", "еда", "кухн", "меню", "караоке", "паб", "pub",
-    "ночной клуб", "night club",
-)
-NEGATIVE_TERMS = (
-    "барбершоп", "barbershop", "барбер", "фитнес", "спортивный клуб",
-    "футбольный клуб", "хоккейный клуб", "танцевальный клуб", "книжный клуб",
-    "мотоклуб", "автоклуб", "детский клуб", "туристический клуб",
-    "салон красоты", "ногтевой", "вакансии", "доска объявлений",
-    "мебель", "клининг", "уборка", "роспись стен", "картины на заказ",
-    "интернет+тв", "интернет и тв", "строитель", "архитект", "недвижим",
-    "снять квартиру", "квартиры посуточно", "доставка воды", "собор",
-    "церковь", "храм", "викторин", "квиз", "тематические игры",
-    "магазин для кондитер", "товары для кондитер", "кондитерские украшения",
-    "украшения на торт", "меловая доска", "оборудование для ресторан",
-    "посуда для ресторан", "для вашего бара", "для вашего ресторана",
-    "consult", "консалт", "на память о кафе", "бывшее кафе",
-    "закрыто навсегда", "история кафе", "из лучших ресторанов",
-    "единая доставка", "сервис заказа", "агрегатор", "заказтайм",
-    "другие товары", "товары для творчества",
-)
-
-PRIMARY_FOOD_RE = re.compile(
-    r"\b(?:ресторан\w*|кафе|кофейн\w*|столов\w*|фудкорт\w*|"
-    r"пицц\w*|кондитер\w*|пекар\w*|выпеч\w*|торт\w*|суши|ролл\w*|"
-    r"бургер\w*|фастфуд\w*|паб\w*|бар\b|гастробар\w*|лаунж\w*|"
-    r"доставка еды|кулинари\w*|restaurant\w*|cafe|coffee|pizza|pub|lounge)\b",
-    re.IGNORECASE,
-)
-ACCOMMODATION_PRIMARY_RE = re.compile(
-    r"\b(?:отел\w*|гостини(?:ц|ч)\w*|гостев\w+ дом\w*|пансионат\w*|санатори\w*|"
-    r"апартамент\w*|хостел\w*|курорт\w*|resort|hotel|villa)\b",
-    re.IGNORECASE,
-)
-NON_HORECA_PRIMARY_RE = re.compile(
-    r"\b(?:мебел\w*|клининг\w*|уборк\w*|роспись\w*|картин\w*|"
-    r"интернет\+?тв|провайдер\w*|архитек\w*|строител\w*|недвижим\w*|"
-    r"квартир\w*|вод\w*|собор\w*|церк\w*|храм\w*|квиз\w*|викторин\w*|"
-    r"экскурси\w*|путешеств\w*)\b",
-    re.IGNORECASE,
-)
-SUPPLIER_PRIMARY_RE = re.compile(
-    r"(?:магазин|товар\w*|инвентар\w*|оборудован\w*|сырь[её]|упаковк\w*|"
-    r"посуд\w*|доск\w*|украшени\w*)[^\n]{0,45}"
-    r"(?:кондитер\w*|торт\w*|кафе|бар\w*|ресторан\w*)|"
-    r"(?:кондитер\w*|кафе|бар\w*|ресторан\w*)[^\n]{0,45}"
-    r"(?:инвентар\w*|оборудован\w*|сырь[её]|упаковк\w*|посуд\w*)",
-    re.IGNORECASE,
-)
-INACTIVE_PRIMARY_RE = re.compile(
-    r"(?:на память о|бывш\w* (?:кафе|бар|ресторан)|закрыт\w* навсегда|"
-    r"истори\w* (?:кафе|бара|ресторана))",
-    re.IGNORECASE,
-)
-AGGREGATOR_PRIMARY_RE = re.compile(
-    r"(?:из лучших ресторанов|единая доставка|сервис заказа|агрегатор|заказтайм)",
-    re.IGNORECASE,
-)
-CONSULT_PRIMARY_RE = re.compile(r"\b(?:consult\w*|консалт\w*)\b", re.IGNORECASE)
-NON_FOOD_ACTIVITY_RE = re.compile(
-    r"^(?:другие товары|товары для творчества|мебель|оборудование)$",
-    re.IGNORECASE,
-)
-OFF_PREMISE_RE = re.compile(
-    r"(?:кейтеринг|фуршет|банкет(?:ный|ы)?|торт\w* на заказ|"
-    r"домашн\w* кондитер)",
-    re.IGNORECASE,
-)
-
 
 def _maybe_alert_token_dead(error: dict) -> None:
     """Шлёт TG-алерт один раз за прогон, если ошибка VK означает invalid token."""
@@ -184,67 +117,31 @@ def _call(method: str, token: str, **params) -> dict:
 
 def _group_relevance(group: dict, matched_queries: list[str]) -> tuple[float, list[str]]:
     """Score broad VK candidates; master later quarantines weak standalone rows."""
-    corpus = " ".join(
-        str(group.get(k) or "") for k in ("name", "activity", "description", "status")
-    ).lower()
-    positives = [term for term in POSITIVE_TERMS if term in corpus]
-    negatives = [term for term in NEGATIVE_TERMS if term in corpus]
-    query_hits = [q for q in matched_queries if q.lower() in corpus]
-
-    score = 0.35
-    score += min(0.45, len(positives) * 0.12)
-    score += min(0.15, len(query_hits) * 0.05)
-    score -= min(0.65, len(negatives) * 0.35)
-    score = max(0.0, min(1.0, score))
-
-    flags: list[str] = []
-    if negatives:
-        flags.append("vk_negative_terms")
-    if not positives:
-        flags.append("vk_weak_relevance")
     name = str(group.get("name") or "")
     activity = str(group.get("activity") or "")
     description = str(group.get("description") or "")
-    primary = " ".join((name, activity))
-    name_food = bool(PRIMARY_FOOD_RE.search(name))
-    activity_food = bool(PRIMARY_FOOD_RE.search(activity))
-    description_food = bool(PRIMARY_FOOD_RE.search(description))
-    has_primary_food = name_food or activity_food
-    if has_primary_food:
-        score = min(1.0, score + 0.15)
-    else:
-        flags.append("vk_no_primary_food_signal")
-        score = min(score, 0.65)
-    if ACCOMMODATION_PRIMARY_RE.search(primary) and not has_primary_food:
-        flags.append("vk_accommodation_primary")
-        score = min(score, 0.35)
-    if NON_HORECA_PRIMARY_RE.search(primary) and not has_primary_food:
-        flags.append("vk_non_horeca_primary")
+    has_primary = (
+        normalize_segment(name) != DEFAULT_SEGMENT
+        or normalize_segment(activity) != DEFAULT_SEGMENT
+    )
+    corpus = " ".join((name, activity, description, str(group.get("status") or ""))).casefold()
+    query_hits = [q for q in matched_queries if q.casefold() in corpus]
+
+    score = 0.35
+    if has_primary:
+        score += 0.35
+    if normalize_segment(description) != DEFAULT_SEGMENT:
+        score += 0.10
+    score += min(0.15, 0.05 * len(query_hits))
+
+    flags: list[str] = []
+    if not has_primary:
+        flags.append("vk_no_primary_segment_signal")
+        score = min(score, 0.60)
+    if NOISE_PRIMARY_RE.search(f"{name} {activity}"):
+        flags.append("vk_noise_primary")
         score = min(score, 0.25)
-    if SUPPLIER_PRIMARY_RE.search(primary):
-        flags.append("vk_supplier_primary")
-        score = min(score, 0.25)
-    if INACTIVE_PRIMARY_RE.search(primary):
-        flags.append("vk_inactive_primary")
-        score = min(score, 0.25)
-    if AGGREGATOR_PRIMARY_RE.search(primary):
-        flags.append("vk_aggregator_primary")
-        score = min(score, 0.35)
-    if CONSULT_PRIMARY_RE.search(primary):
-        flags.append("vk_consulting_primary")
-        score = min(score, 0.35)
-    if NON_FOOD_ACTIVITY_RE.search(activity.strip()):
-        flags.append("vk_non_food_activity")
-        score = min(score, 0.25)
-    if activity_food and not name_food and not description_food:
-        flags.append("vk_activity_only_food_signal")
-        score = min(score, 0.69)
-    if (
-        OFF_PREMISE_RE.search(primary)
-        or (ACCOMMODATION_PRIMARY_RE.search(primary) and has_primary_food)
-        or ("детск" in primary.casefold() and has_primary_food)
-    ):
-        flags.append("vk_manual_business_segment")
+    score = max(0.0, min(1.0, score))
     if score < 0.5:
         flags.append("manual_review")
     return score, flags
@@ -272,15 +169,15 @@ def _pick_address(group: dict) -> str:
 
 
 def _category_for(group: dict, matched_queries: list[str]) -> str:
-    activity = str(group.get("activity") or "")
-    normalized = normalize_category(activity)
-    if normalized != "прочее":
-        return normalized
+    for text in (group.get("activity"), group.get("name")):
+        segment = normalize_segment(text)
+        if segment != DEFAULT_SEGMENT:
+            return segment
     for query in matched_queries:
-        normalized = normalize_category(query)
-        if normalized != "прочее":
-            return normalized
-    return "прочее"
+        segment = QUERY_SEGMENT.get(query, DEFAULT_SEGMENT)
+        if segment != DEFAULT_SEGMENT:
+            return segment
+    return DEFAULT_SEGMENT
 
 
 def _site_domain(site: str) -> str:
@@ -453,7 +350,7 @@ async def run(context):
             city = normalize_city_name(city)
             screen = g.get("screen_name") or f"club{gid}"
             social = f"https://vk.com/{screen}"
-            activity = g.get("activity") or "общепит"
+            activity = g.get("activity") or ""
             confidence, quality_flags = _group_relevance(g, matched_queries)
             if confidence <= 0.05:
                 continue

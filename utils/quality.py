@@ -1,30 +1,21 @@
 """Shared quality policy for broad-source observations.
 
-VK is intentionally collected broadly, but rows without primary food-service
-evidence must not independently enter the working master, seed the crawler, or
-become eligible for outreach.  Keeping this policy in one module prevents the
-pipeline stages from drifting apart.
+VK is intentionally collected broadly, but rows without a primary business
+segment signal (or that look like community noise) must not independently
+enter the working master, seed the crawler, or become eligible for outreach.
+Keeping this policy in one module prevents the pipeline stages from drifting
+apart.
 """
 from __future__ import annotations
 
 
 VK_QUARANTINE_FLAGS = frozenset({
-    "vk_no_primary_food_signal",
-    "vk_accommodation_primary",
-    "vk_non_horeca_primary",
-    "vk_supplier_primary",
-    "vk_inactive_primary",
-    "vk_aggregator_primary",
-    "vk_consulting_primary",
-    "vk_non_food_activity",
+    "vk_no_primary_segment_signal",
+    "vk_noise_primary",
 })
 
 VK_RELEVANCE_FLAGS = frozenset({
     *VK_QUARANTINE_FLAGS,
-    "vk_negative_terms",
-    "vk_weak_relevance",
-    "vk_activity_only_food_signal",
-    "vk_manual_business_segment",
     "manual_review",
 })
 
@@ -39,7 +30,7 @@ def row_flags(row: dict) -> set[str]:
 
 
 def is_weak_vk_candidate(row: dict) -> bool:
-    """Whether a row is a broad VK candidate lacking primary HoReCa evidence."""
+    """Whether a row is a broad VK candidate lacking a primary segment signal."""
     source = str(row.get("source") or "").strip().casefold()
     return source.startswith("vk") and bool(row_flags(row) & VK_QUARANTINE_FLAGS)
 
