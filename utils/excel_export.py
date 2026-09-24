@@ -22,16 +22,18 @@ import csv
 import os
 from collections import Counter, defaultdict
 from datetime import datetime
+from itertools import cycle
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
+from config.segments import SEGMENTS, segment_title
 from utils.csv_safety import neutralize_csv_formula
 
 
 HEADERS = [
-    "Город", "Название", "Тип клиента", "Категория",
+    "Город", "Название", "Сегмент", "Категория",
     "Адрес", "Телефон", "Email", "Сайт", "Соцсеть",
     "Комментарий", "Источник", "Собрано",
 ]
@@ -43,21 +45,13 @@ CSV_FIELD_ORDER = [
     "comment", "source", "parsed_at",
 ]
 
-# Заливка строки по client_type
-FILL_BY_TYPE = {
-    "ресторан":      "DCEEFB",  # голубой
-    "кафе":          "FEF3C7",  # жёлтый
-    "фастфуд":       "FFF7ED",  # оранжевый
-    "бар":           "E2D9F3",  # фиолетовый
-    "паб":           "E2D9F3",
-    "клуб":          "FFE4E6",  # розовый
-    "кофейня":       "DCFCE7",  # зелёный
-    "столовая":      "F3F4F6",  # серый
-    "фудкорт":       "FFF7ED",
-    "пиццерия":      "FEF3C7",
-    "кондитерская":  "DCFCE7",
-    "прочее":        "FFFFFF",
-}
+# Заливка строки по сегменту (client_type)
+_PALETTE = (
+    "DCEEFB", "FEF3C7", "FFF7ED", "E2D9F3", "FFE4E6",
+    "DCFCE7", "F3F4F6", "E0F2FE", "FCE7F3", "ECFCCB",
+)
+FILL_BY_TYPE = {segment.key: color for segment, color in zip(SEGMENTS, cycle(_PALETTE))}
+FILL_BY_TYPE["прочее"] = "FFFFFF"
 
 # Заливка для шапки и стилевые заголовки
 HEADER_FILL = PatternFill("solid", fgColor="1F2937")  # тёмно-серый
@@ -135,6 +129,8 @@ def _write_sheet(ws, rows: list[dict], with_filter: bool = True) -> None:
 
         for c_idx, csv_field in enumerate(CSV_FIELD_ORDER, start=1):
             val = row.get(csv_field, "") or ""
+            if csv_field == "client_type":
+                val = segment_title(val)
             cell = ws.cell(
                 row=r_idx,
                 column=c_idx,
@@ -171,7 +167,7 @@ def _write_sheet(ws, rows: list[dict], with_filter: bool = True) -> None:
 
     # ширина колонок
     widths = {
-        "Город": 14, "Название": 36, "Тип клиента": 14, "Категория": 16,
+        "Город": 14, "Название": 36, "Сегмент": 26, "Категория": 16,
         "Адрес": 40, "Телефон": 20, "Email": 28, "Сайт": 30, "Соцсеть": 24,
         "Комментарий": 30, "Источник": 14, "Собрано": 16,
     }
@@ -197,7 +193,7 @@ def _write_summary(ws, rows: list[dict], src_csv: str) -> None:
 
     src_cnt = Counter(r.get("source", "—") for r in rows)
     city_cnt = Counter(r.get("city", "—") for r in rows)
-    type_cnt = Counter(r.get("client_type", "—") for r in rows)
+    type_cnt = Counter(segment_title(r.get("client_type")) for r in rows)
 
     def pct(n: int) -> str:
         return f"{100 * n / total:.1f}%" if total else "—"

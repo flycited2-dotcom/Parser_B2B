@@ -240,3 +240,29 @@ def test_process_lock_rejects_a_second_writer(tmp_path):
         pass
     metadata = json.loads(lock_path.read_text(encoding="utf-8"))
     assert metadata["pid"] > 0
+
+
+def test_build_outreach_skips_signals_in_dry_run_and_reports_missing_exclusion_file(monkeypatch, tmp_path):
+    _clean_config(monkeypatch)
+    monkeypatch.setenv("DRY_RUN", "1")
+    monkeypatch.setenv("EXCLUDE_MASTERS", str(tmp_path / "missing.csv"))
+    config = main.RunConfig.from_env()
+    master = tmp_path / "master_all.csv"
+    with master.open("w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.DictWriter(handle, fieldnames=main.storage.FIELDS, delimiter=";")
+        writer.writeheader()
+        writer.writerow({
+            "entity_id": "e1", "name": "Окна Юг", "city": "Ялта",
+            "client_type": "stroitelstvo", "email": "info@okna-yug.ru",
+            "confidence": "0.95",
+        })
+    summary = {"warnings": []}
+    failures = []
+
+    outreach = asyncio.run(main._build_outreach(config, tmp_path, str(master), summary, failures))
+
+    assert failures == []
+    assert outreach["ready_rows"] == 1
+    assert summary["web_signals"] == "skipped"
+    assert summary["segments"]["ready_by_segment"] == {"stroitelstvo": 1}
+    assert any("missing.csv" in warning for warning in summary["warnings"])

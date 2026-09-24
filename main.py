@@ -690,7 +690,7 @@ def _write_handoff(
             outreach_manifest[key + "_sha256"] = _sha256(target)
         outreach_digest = outreach_manifest.get("ready_csv_sha256", "")
         outreach_manifest["idempotency_key"] = (
-            f"horeca-outreach-v1:{outreach_digest}" if outreach_digest else None
+            f"b2b-outreach-v1:{outreach_digest}" if outreach_digest else None
         )
 
     quarantine_manifest: dict[str, Any] | None = None
@@ -704,7 +704,7 @@ def _write_handoff(
             "sha256": quarantine_digest,
             "row_count": _count_csv_rows(str(quarantine_target)),
             "automation_eligible": False,
-            "idempotency_key": f"horeca-quarantine-v1:{quarantine_digest}",
+            "idempotency_key": f"b2b-quarantine-v1:{quarantine_digest}",
         }
 
     manifest = {
@@ -717,7 +717,7 @@ def _write_handoff(
         "master_csv": str(csv_target.resolve()),
         "master_xlsx": str(xlsx_target.resolve()) if xlsx_target else None,
         "sha256": digest,
-        "idempotency_key": f"horeca-master-v1:{digest}",
+        "idempotency_key": f"b2b-master-v1:{digest}",
         "approved_for_send": False,
         "auto_send_allowed": False,
         "approval_policy": "manual_approval_required",
@@ -797,6 +797,47 @@ def _finish(
     return summary["exit_code"]
 
 
+async def _build_outreach(
+    config: RunConfig,
+    output_dir: Path,
+    master_csv: str,
+    summary: dict[str, Any],
+    failures: list[str],
+) -> dict[str, Any]:
+    """Web signals (bounded) → cross-base exclusions → outreach artifacts."""
+    from utils import cross_base, web_signals
+    from utils.outreach_export import build_outreach_exports
+
+    signals_path = output_dir / "web_signals.json"
+    if config.skip_enrichment:
+        summary["web_signals"] = "skipped"
+    else:
+        progress.mark_stage("web_signals")
+        try:
+            summary["web_signals"] = await web_signals.refresh_signals(
+                master_csv,
+                str(signals_path),
+                max_sites=_env_int("ENRICH_MAX_SITES", 400),
+            )
+        except Exception as exc:
+            failures.append(f"web_signals: {_redact(str(exc))[:300]}")
+
+    emails, domains, warnings = cross_base.load_exclusions(cross_base.env_paths())
+    summary["warnings"].extend(warnings)
+    outreach = build_outreach_exports(
+        master_csv,
+        str(output_dir),
+        run_id=config.run_id,
+        signals_cache=web_signals.load_cache(str(signals_path)),
+        other_base=(emails, domains),
+    )
+    summary["segments"] = {
+        "ready_by_segment": outreach["by_segment"],
+        "ready_by_signal": outreach["by_signal"],
+    }
+    return outreach
+
+
 async def _pipeline(config: RunConfig, output_dir: Path) -> int:
     started = time.monotonic()
     summary = _base_summary(config, output_dir)
@@ -830,7 +871,7 @@ async def _pipeline(config: RunConfig, output_dir: Path) -> int:
         summary["warnings"].append(f"Resume skipped completed sources: {sorted(completed)}")
 
     print("=" * 60)
-    print("HORECA CRIMEA PARSER")
+    print("B2B CRIMEA PARSER")
     print(f"run_id={config.run_id} dry_run={config.dry_run}")
     print(f"sources={[spec.key for spec in selected]}")
     print(f"output={output_dir.resolve()}")
@@ -881,12 +922,8 @@ async def _pipeline(config: RunConfig, output_dir: Path) -> int:
                     f"master: {summary['master_rows']} rows; minimum is {config.min_records_total}"
                 )
 
-            from utils.outreach_export import build_outreach_exports
-
-            outreach = build_outreach_exports(
-                master_csv,
-                str(output_dir),
-                run_id=config.run_id,
+            outreach = await _build_outreach(
+                config, output_dir, master_csv, summary, failures
             )
             summary["artifacts"]["outreach"] = outreach
             if not outreach["ready_rows"]:

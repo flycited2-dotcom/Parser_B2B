@@ -70,7 +70,7 @@ def send_document(token: str, chat_id: str, file_path: str, caption: str = "",
         print(f"[telegram] file not found: {file_path}")
         return False
 
-    boundary = "----HorecaParserBoundary7c3"
+    boundary = "----B2BParserBoundary7c3"
     parts = [
         f"--{boundary}\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n{chat_id}\r\n"
     ]
@@ -160,7 +160,7 @@ def build_summary(csv_path: str, source_label: str = "") -> str:
     city_lines = [f"  • {html.escape(k)}: <b>{v}</b>"
                   for k, v in sorted(by_city.items(), key=lambda kv: -kv[1])][:10]
 
-    title = "HORECA Crimea Parser — отчёт"
+    title = "B2B Crimea Parser — отчёт"
     if source_label:
         title += f" · {html.escape(source_label)}"
 
