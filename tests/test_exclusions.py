@@ -60,3 +60,46 @@ def test_prepare_item_keeps_clean_business_unflagged(isolated_storage):
         "source": "OSM", "source_id": "node:2",
     })
     assert row["quality_flags"] == ""
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Музыкальная школа № 1",
+        "ГАУЗРК «Крымский республиканский стоматологический центр»",
+        "Филиал детской поликлиники №2",
+        "Ялтинская городская больница №1 Поликлиника №1",
+        "ФАП с. Лесное",
+        "Фельдшерско-акушерский пункт",
+        "ФГАОУ ВО КФУ им. Вернадского",
+        "ГБПОУ РК Симферопольский колледж",
+        "МКУ Управление образования",
+        "МБУДО Детская школа искусств",
+        "Гимназия им. Ушинского",
+        "Лицей № 3",
+        "Дворец водных видов спорта",
+        "Муниципальное бюджетное учреждение Центр",
+    ],
+)
+def test_government_bodies_named_in_spec_are_excluded(name):
+    assert "excluded_gov" in exclusion_flags(name)
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["Поликлиника Медикус", "Школа танцев Grace", "Детский центр Маугли", "Автошкола Луч"],
+)
+def test_private_businesses_are_not_government(name):
+    assert "excluded_gov" not in exclusion_flags(name)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Gloria Jeans", "PlayToday", "Street Beat", "585 Золотой", "Технониколь",
+        "ЭТМ", "Главдоставка", "Кий Авиа", "Самолёт Плюс", "Дятьково",
+        "Аско-страхование", "СберЛизинг",
+    ],
+)
+def test_federal_brands_found_in_audit_are_chains(name):
+    assert "excluded_chain" in exclusion_flags(name)
