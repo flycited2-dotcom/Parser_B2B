@@ -24,6 +24,7 @@ from config.segments import (
     EXCLUDE_EMAIL_DOMAINS,
     EXCLUDED_FLAGS,
     SEGMENT_BY_KEY,
+    exclusion_flags,
     segment_title,
 )
 from utils.cross_base import is_in_other_base
@@ -109,20 +110,36 @@ def _email_candidates(row: dict) -> list[str]:
     return [email for email, _score in sorted(candidates.items(), key=lambda item: (-item[1], item[0]))]
 
 
-def _segments_all(row: dict) -> str:
-    candidates = [str(row.get("client_type") or "")]
+def _provenance_values(row: dict, field: str) -> list[str]:
     try:
         provenance = json.loads(str(row.get("provenance") or "") or "{}")
     except ValueError:
         provenance = {}
     fields = provenance.get("fields") if isinstance(provenance, dict) else None
     if not isinstance(fields, dict):
-        fields = {}
-    for evidence in fields.get("client_type") or []:
-        if isinstance(evidence, dict):
-            candidates.append(str(evidence.get("value") or ""))
+        return []
+    return [
+        str(evidence.get("value") or "")
+        for evidence in fields.get(field) or []
+        if isinstance(evidence, dict)
+    ]
+
+
+def _segments_all(row: dict) -> str:
+    candidates = [str(row.get("client_type") or ""), *_provenance_values(row, "client_type")]
     keys = [key for key in dict.fromkeys(candidates) if key in SEGMENT_BY_KEY]
     return "; ".join(segment_title(key) for key in keys)
+
+
+def _current_exclusions(row: dict) -> set[str]:
+    """Recompute exclusion flags so list updates also apply to stored rows."""
+    category_text = f"{row.get('category') or ''} {row.get('raw_category') or ''}"
+    names = [str(row.get("name") or ""), *_provenance_values(row, "name")]
+    return {
+        flag
+        for name in dict.fromkeys(names)
+        for flag in exclusion_flags(name, category_text)
+    }
 
 
 def _review_reason(
@@ -135,7 +152,7 @@ def _review_reason(
     if not str(row.get("name") or "").strip():
         return "missing_name"
     flags = _flags(row)
-    excluded = sorted(flags & EXCLUDED_FLAGS)
+    excluded = sorted((flags & EXCLUDED_FLAGS) | _current_exclusions(row))
     if excluded:
         return excluded[0]
     segment = SEGMENT_BY_KEY.get(str(row.get("client_type") or "").strip())

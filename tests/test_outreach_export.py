@@ -108,3 +108,20 @@ def test_competitors_can_be_included_explicitly(tmp_path):
     assert result["ready_rows"] == 1
     row = _read(result["ready_csv"])[0]
     assert row["Сигналы"] == "no_website"
+
+
+def test_exclusions_are_recomputed_so_list_updates_apply_to_stored_rows(tmp_path):
+    master = tmp_path / "master_all.csv"
+    _write_master(master, [
+        {"entity_id": "chain-unflagged", "name": "Магнит Косметик", "city": "Ялта",
+         "client_type": "krasota", "email": "info@beauty-shop.ru", "confidence": "0.99"},
+        {"entity_id": "gov-in-provenance", "name": "Стоматология", "city": "Ялта",
+         "client_type": "medicina", "email": "info@stom.ru", "confidence": "0.99",
+         "provenance": json.dumps({"observations": [], "fields": {"name": [
+             {"value": "ГАУЗРК Стоматологическая поликлиника №1", "source": "OSM", "observation_id": "o1"},
+         ]}}, ensure_ascii=False)},
+    ])
+    result = build_outreach_exports(str(master), str(tmp_path), min_confidence=0.7)
+    assert result["ready_rows"] == 0
+    reasons = {row["entity_id"]: row["review_reason"] for row in _read(result["review_csv"])}
+    assert reasons == {"chain-unflagged": "excluded_chain", "gov-in-provenance": "excluded_gov"}
