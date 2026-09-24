@@ -1,26 +1,34 @@
 import pytest
 
+from config.segments import SEGMENTS
 from parsers import osm
 
 
 @pytest.mark.parametrize(
     ("tags", "expected"),
     [
-        ({"amenity": "restaurant"}, "ресторан"),
-        ({"amenity": "ice_cream"}, "кондитерская"),
-        ({"amenity": "cafe", "cuisine": "coffee_shop"}, "кофейня"),
-        ({"shop": "bakery"}, "кондитерская"),
-        ({"shop": "coffee"}, "кофейня"),
+        ({"shop": "car_repair"}, "avto"),
+        ({"office": "estate_agent"}, "nedvizhimost"),
+        ({"amenity": "dentist"}, "medicina"),
+        ({"craft": "carpenter"}, "mebel"),
+        ({"amenity": "restaurant"}, "прочее"),
     ],
 )
-def test_category_coverage(tags, expected):
+def test_category_by_segment_tags(tags, expected):
     assert osm._category(tags) == expected
 
 
-def test_query_has_food_amenities_and_shops():
-    assert "biergarten" in osm.QUERY
-    assert "ice_cream" in osm.QUERY
-    assert 'nwr["shop"' in osm.QUERY
+def test_raw_category_is_matched_tag():
+    assert osm._raw_category({"shop": "car_repair", "name": "СТО"}) == "shop=car_repair"
+
+
+def test_query_covers_every_segment_tag_and_no_food():
+    for segment in SEGMENTS:
+        for key, value in segment.osm_tags:
+            assert f'nwr["{key}"' in osm.QUERY
+            assert value in osm.QUERY
+    assert "restaurant" not in osm.QUERY
+    assert "fast_food" not in osm.QUERY
 
 
 def test_all_endpoints_failure_is_fatal(monkeypatch):

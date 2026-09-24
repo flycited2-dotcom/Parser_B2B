@@ -1,8 +1,8 @@
-"""OpenStreetMap Overpass API: объекты общепита/отдыха по полигону Крыма.
+"""OpenStreetMap Overpass API: коммерческие организации Крыма по тегам сегментов.
 
-Один HTTP-запрос — JSON со всеми node/way/relation, у которых
-amenity=restaurant|cafe|fast_food|bar|pub|nightclub|food_court.
-В тегах напрямую: name, phone, email, website, addr:*.
+Один HTTP-запрос — JSON со всеми node/way/relation, чьи теги перечислены в
+config/segments.py (shop/office/craft/amenity/...). Каждая точка проходит
+локальную проверку границы полуострова.
 """
 import json
 import os
@@ -14,6 +14,7 @@ from urllib.request import Request
 from utils.http_retry import http_request
 from urllib.error import URLError, HTTPError
 
+from config.segments import osm_segment, osm_tag_groups
 from utils.storage import save_item
 from utils.geo_city import detect_city_by_coords, normalize_city_name
 from utils.crimea_boundary import is_in_crimea
@@ -28,17 +29,16 @@ OVERPASS_ENDPOINTS = [
 # каждая точка обязательно проходит локальный point-in-polygon по контуру OSM.
 BBOX = "44.35,32.45,46.20,36.70"
 
-AMENITY_RE = "restaurant|cafe|fast_food|bar|pub|nightclub|food_court|biergarten|ice_cream"
-SHOP_RE = "bakery|confectionery|pastry|coffee"
 
-QUERY = f"""
-[out:json][timeout:90];
-(
-  nwr["amenity"~"^({AMENITY_RE})$"]({BBOX});
-  nwr["shop"~"^({SHOP_RE})$"]({BBOX});
-);
-out center tags;
-"""
+def _build_query() -> str:
+    lines = [
+        f'  nwr["{key}"~"^({"|".join(values)})$"]({BBOX});'
+        for key, values in sorted(osm_tag_groups().items())
+    ]
+    return "[out:json][timeout:180];\n(\n" + "\n".join(lines) + "\n);\nout center tags;\n"
+
+
+QUERY = _build_query()
 
 CITY_HINTS = (
     "Симферополь", "Ялта", "Севастополь", "Евпатория", "Феодосия",
@@ -47,33 +47,6 @@ CITY_HINTS = (
     "Симеиз", "Алупка", "Ливадия", "Массандра", "Мисхор",
     "Канака", "Орджоникидзе", "Щёлкино", "Морское", "Малореченское",
 )
-
-CATEGORY_MAP = {
-    "restaurant": "ресторан",
-    "cafe": "кафе",
-    "fast_food": "фастфуд",
-    "bar": "бар",
-    "pub": "паб",
-    "nightclub": "клуб",
-    "food_court": "фудкорт",
-    "biergarten": "бар",
-    "ice_cream": "кондитерская",
-}
-
-SHOP_CATEGORY_MAP = {
-    "bakery": "кондитерская",
-    "confectionery": "кондитерская",
-    "pastry": "кондитерская",
-    "coffee": "кофейня",
-}
-
-# amenity=cafe с cuisine=coffee_shop — точнее относить к кофейне, чем к кафе.
-CUISINE_OVERRIDES = {
-    "coffee_shop": "кофейня",
-    "pizza": "пиццерия",
-    "ice_cream": "кондитерская",
-}
-
 
 def _normalize_phone(raw: str) -> str:
     if not raw:
@@ -129,25 +102,11 @@ def _build_address(tags: dict) -> str:
 
 
 def _category(tags: dict) -> str:
-    cuisine = (tags.get("cuisine") or "").lower()
-    for key, val in CUISINE_OVERRIDES.items():
-        if key in cuisine:
-            return val
-    amenity = tags.get("amenity")
-    if amenity and amenity in CATEGORY_MAP:
-        return CATEGORY_MAP[amenity]
-    shop = tags.get("shop")
-    if shop and shop in SHOP_CATEGORY_MAP:
-        return SHOP_CATEGORY_MAP[shop]
-    return "прочее"
+    return osm_segment(tags)[0]
 
 
 def _raw_category(tags: dict) -> str:
-    if tags.get("amenity"):
-        return f"amenity={tags['amenity']}"
-    if tags.get("shop"):
-        return f"shop={tags['shop']}"
-    return ""
+    return osm_segment(tags)[1]
 
 
 def _tag_values(tags: dict, keys: tuple[str, ...]) -> list[str]:
@@ -203,10 +162,10 @@ def _fetch_overpass() -> list:
         try:
             req = Request(
                 url, data=body,
-                headers={"User-Agent": "horeca_parser/1.0", "Content-Type": "application/x-www-form-urlencoded"},
+                headers={"User-Agent": "b2b_parser/1.0", "Content-Type": "application/x-www-form-urlencoded"},
                 method="POST",
             )
-            raw = http_request(req, timeout=120)
+            raw = http_request(req, timeout=240)
             data = json.loads(raw.decode("utf-8"))
             return data.get("elements", [])
         except (URLError, HTTPError, TimeoutError, json.JSONDecodeError) as e:
@@ -266,7 +225,7 @@ async def run(context):
             "source_url": f"https://www.openstreetmap.org/{osm_type}/{osm_id}" if osm_id else "",
             "latitude": str(lat),
             "longitude": str(lon),
-            "confidence": "0.98" if tags.get("amenity") else "0.82",
+            "confidence": "0.95",
             "quality_flags": "",
             "parsed_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
         }
