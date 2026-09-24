@@ -1,0 +1,57 @@
+# /etc/systemd/system/horeca_parser.service
+# Полный прогон парсера. Запуск ТОЛЬКО с --no-block (oneshot блокируется на часы):
+#   systemctl start --no-block horeca_parser.service
+[Unit]
+Description=HORECA Crimea Parser (full run: OSM + VK + Yandex Maps + Crawler + enrichment)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=horeca-parser
+Group=horeca-parser
+WorkingDirectory=/home/horeca_parser
+ExecStart=/home/horeca_parser/venv/bin/python main.py
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=HOME=/home/horeca_parser
+Environment=PLAYWRIGHT_BROWSERS_PATH=/home/horeca_parser/.cache/ms-playwright
+Environment=XDG_CONFIG_HOME=/home/horeca_parser/output/.browser-config
+Environment=XDG_CACHE_HOME=/home/horeca_parser/output/.browser-cache
+
+# install(1) is prefixed with '+' so only these preparation commands retain
+# manager privileges; the parser and Chromium always run as horeca-parser.
+ExecStartPre=+/usr/bin/install -d -o horeca-parser -g horeca-parser -m 0750 /home/horeca_parser/output
+ExecStartPre=+/usr/bin/install -d -o root -g horeca-parser -m 0750 /home/horeca_parser/.cache/ms-playwright
+ExecStartPre=+/usr/bin/install -d -o horeca-parser -g horeca-parser -m 0700 /home/horeca_parser/output/.browser-config
+ExecStartPre=+/usr/bin/install -d -o horeca-parser -g horeca-parser -m 0700 /home/horeca_parser/output/.browser-cache
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=horeca-parser
+
+# Chromium-compatible hardening.  Avoid syscall filters/PrivateUsers here:
+# both commonly break Chromium's own user-namespace sandbox.
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictRealtime=true
+LockPersonality=true
+ReadWritePaths=/home/horeca_parser/output
+ReadWritePaths=-/home/horeca_parser/token.json
+# Прогон с ENRICH_MAX_SITES=400 укладывается в часы, не сутки.
+TimeoutStartSec=12h
+# Chromium течёт; лимит защищает соседей по серверу от OOM.
+MemoryMax=3G
+OOMPolicy=stop
+
+[Install]
+WantedBy=multi-user.target

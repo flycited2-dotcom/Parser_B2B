@@ -1,0 +1,14 @@
+# Ubuntu 23.10+ restricts unprivileged user namespaces for downloaded builds.
+# These root-owned Playwright binaries may use user namespaces without
+# disabling the protection globally. Systemd still applies the service unit's
+# filesystem/device/capability restrictions.
+abi <abi/4.0>,
+include <tunables/global>
+
+profile horeca-parser-chromium /home/horeca_parser/.cache/ms-playwright/chromium-*/chrome-linux64/chrome flags=(unconfined) {
+  userns,
+}
+
+profile horeca-parser-chromium-headless /home/horeca_parser/.cache/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell flags=(unconfined) {
+  userns,
+}

@@ -1,0 +1,9 @@
+# Human-maintained direct dependencies. Production deployments should install
+# the fully reproducible requirements.lock captured from the validated VPS.
+playwright>=1.61.0,<2
+python-dotenv>=1.2.2,<2
+openpyxl>=3.1.5,<4
+aiohttp>=3.14.1,<4
+google-api-python-client>=2.198.0,<3
+google-auth>=2.56.0,<3
+google-auth-oauthlib>=1.4.0,<2

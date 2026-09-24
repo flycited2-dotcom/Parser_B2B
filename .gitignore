@@ -1,0 +1,44 @@
+# Secrets and local overrides
+.env
+.env.*
+!.env.example
+token.json
+client_secrets*.json
+*.pem
+*.key
+
+# Python and tooling
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Runtime state and collected personal/business contact data
+output/
+*.log
+*.db
+*.db-shm
+*.db-wal
+*.csv
+*.xlsx
+
+# Browser/test artefacts
+playwright-report/
+test-results/
+
+# Local packaging and backups
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
