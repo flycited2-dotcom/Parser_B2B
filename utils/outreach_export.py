@@ -29,6 +29,7 @@ from config.segments import (
 )
 from utils.cross_base import is_in_other_base
 from utils.csv_safety import neutralize_csv_formula
+from utils.email_quality import email_relation, sanitize_email
 from utils.quality import VK_QUARANTINE_FLAGS
 from utils.web_signals import row_signals
 
@@ -91,17 +92,18 @@ def _email_candidates(row: dict) -> list[str]:
     candidates: dict[str, int] = {}
     material = " | ".join(str(row.get(field) or "") for field in ("email", "all_emails"))
     for match in EMAIL_RE.findall(material):
-        email = match.strip().casefold()
+        email, _note = sanitize_email(match, website_domain)
+        if not email:
+            continue
         local, _separator, domain = email.partition("@")
         if EMAIL_BLACKLIST.search(email) or _blocked_domain(domain):
             continue
         score = 0
-        if website_domain and (
-            domain == website_domain
-            or domain.endswith("." + website_domain)
-            or website_domain.endswith("." + domain)
-        ):
+        relation = email_relation(email, website_domain)
+        if relation == "same":
             score += 100
+        elif relation == "free":
+            score += 10  # почтовый сервис надёжнее чужого корпоративного домена
         for index, prefix in enumerate(PREFERRED_PREFIXES):
             if local == prefix or local.startswith(prefix + "."):
                 score += 50 - index
@@ -176,7 +178,12 @@ def _review_reason(
     return ""
 
 
-def _outreach_row(row: dict, email: str, signals: list[str], pitch: str) -> dict:
+def _outreach_row(
+    row: dict, email: str, signals: list[str], pitch: str, candidates: list[str] | None = None,
+) -> dict:
+    flags = [flag for flag in str(row.get("quality_flags") or "").split("|") if flag]
+    if email_relation(email, _website_domain(row.get("website", ""))) == "foreign":
+        flags.append("email_foreign_domain")
     return {
         "Email": email,
         "Название": row.get("name", ""),
@@ -192,8 +199,8 @@ def _outreach_row(row: dict, email: str, signals: list[str], pitch: str) -> dict
         "Источник": row.get("sources") or row.get("source", ""),
         "ID объекта": row.get("entity_id", ""),
         "Доверие": f"{_confidence(row):.2f}",
-        "Флаги качества": row.get("quality_flags", ""),
-        "Все email": row.get("all_emails") or row.get("email", ""),
+        "Флаги качества": "|".join(dict.fromkeys(flags)),
+        "Все email": " | ".join(candidates) if candidates else email,
         "Все телефоны": row.get("all_phones") or row.get("phone", ""),
     }
 
@@ -319,7 +326,7 @@ def build_outreach_exports(
             continue
         used_emails.add(email)
         signals, pitch = row_signals(row, cache)
-        ready_rows.append(_outreach_row(row, email, signals, pitch))
+        ready_rows.append(_outreach_row(row, email, signals, pitch, _email_candidates(row)))
         by_segment[str(row.get("client_type") or "")] += 1
         by_signal.update(signals)
     ready_rows.sort(key=lambda row: (str(row["Город"]), str(row["Название"]), row["Email"]))

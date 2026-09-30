@@ -65,6 +65,7 @@ def test_legitimate_addresses_are_kept_unchanged(raw, site):
         ("info@dikidi.net", "dikidi.ru", "platform_or_authority"),
         ("info@reg82.roszdravnadzor.ru", "doctor-dent.su", "platform_or_authority"),
         ("info@minzdrav.gov.ru", "", "platform_or_authority"),
+        ("greenefamilycamp@theurj.onmicrosoft.com", "greene.org", "platform_or_authority"),
         ("sevzdrav@sev.gov.ru", "", "platform_or_authority"),
         ("crimea@82.rospotrebnadzor.ru", "", "platform_or_authority"),
         ("85d71a895e71448591e0e0b21fa9e7af@stacks.vk-portal.net", "stroicentr.info", "platform_or_authority"),

@@ -46,6 +46,7 @@ BLOCK_DOMAIN_SUFFIXES = (
     "sprinthost.ru", "dikidi.net", "dikidi.ru", "yclients.com", "tilda.cc", "tilda.ws", "wix.com",
     "wixpress.com", "sferum.ru", "vk.com", "vk.ru", "vk-portal.net", "roszdravnadzor.ru",
     "rospotrebnadzor.ru", "roskomnadzor.ru", "gov.ru", "gosuslugi.ru", "sentry.io",
+    "onmicrosoft.com",
 )
 SPAM_DOMAIN_RE = re.compile(
     r"casino|kazino|1xbet|poker|slots?(?:[-.]|$)|porn|xxx|vulkan|888|(?:^|[-.])bet(?:[-.]|$)", re.I
