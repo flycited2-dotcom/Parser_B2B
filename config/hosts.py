@@ -24,6 +24,9 @@ FREE_MAIL_HOSTS = frozenset({
     "mail.ru", "inbox.ru", "list.ru", "bk.ru", "internet.ru", "ya.ru",
     "yandex.ru", "yandex.com", "gmail.com", "googlemail.com", "rambler.ru",
     "outlook.com", "hotmail.com", "icloud.com", "me.com", "yahoo.com",
+    "ukr.net", "i.ua", "yandex.ua", "yandex.by", "yandex.kz", "yandex.kg", "tut.by", "bigmir.net",
+    "meta.ua", "mail.ua", "rambler.ua", "live.com", "msn.com", "aol.com", "proton.me",
+    "protonmail.com", "pm.me", "gmx.com", "gmx.net", "zoho.com", "fastmail.com",
 })
 SHARED_HOSTS = SOCIAL_HOSTS | PLATFORM_HOSTS | FREE_MAIL_HOSTS
 
