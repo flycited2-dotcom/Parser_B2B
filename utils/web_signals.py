@@ -111,7 +111,7 @@ def detect_html_signals(html: str, *, booking_relevant: bool, now_year: int) -> 
     return signals
 
 
-async def _attempt(fetch: Fetcher, url: str) -> tuple[str, str]:
+async def attempt_fetch(fetch: Fetcher, url: str) -> tuple[str, str]:
     """(kind, html): ok | blocked | error | unreachable | unknown."""
     try:
         status, html = await fetch(
@@ -151,13 +151,13 @@ async def probe_site(
     checked_at = now.isoformat(timespec="seconds")
     host = website_host(website)
     signals: list[str] = []
-    kind, html = await _attempt(fetch, f"https://{host}/")
+    kind, html = await attempt_fetch(fetch, f"https://{host}/")
     if kind == "blocked":
         # A bot wall says nothing about the site itself: no claim.
         return _result([], "blocked", checked_at)
     if kind != "ok":
         https_failed = kind in DEAD_KINDS
-        http_kind, html = await _attempt(fetch, f"http://{host}/")
+        http_kind, html = await attempt_fetch(fetch, f"http://{host}/")
         if http_kind == "ok":
             if https_failed:
                 signals.append("no_https")
