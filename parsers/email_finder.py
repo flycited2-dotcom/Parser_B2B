@@ -812,8 +812,11 @@ async def _browser_phase(rows: list[dict], indices: list[int], settings: EnrichS
             with_email = next((rows[idx] for idx in members if rows[idx].get("email")), None)
             if with_email is not None:
                 cache.record(host, status="found", via="browser", contacts=_contacts_of(with_email))
-            else:
+            elif any(result):
                 cache.record(host, status="none", via="browser")
+            else:
+                # совсем пустой ответ — сайт, скорее всего, не загрузился: перепроверим через неделю
+                cache.record(host, status="dead", via="browser")
         return True
 
     async with async_playwright() as p:

@@ -284,16 +284,20 @@ def test_cache_is_updated_after_the_run(harness, tmp_path):
         "b.ru": static_ok("https://b.ru"),
         "c.ru": static_ok("https://c.ru", kind="dead"),
         "d.ru": static_ok("https://d.ru"),
+        "e.ru": static_ok("https://e.ru"),
     }
-    harness.browser_results = {"https://b.ru": ("info@b.ru", "", "", "", "info@b.ru", "", "")}
+    harness.browser_results = {
+        "https://b.ru": ("info@b.ru", "", "", "", "info@b.ru", "", ""),
+        "https://d.ru": ("", "+7 (978) 000-00-00", "", "", "", "+7 (978) 000-00-00", ""),  # загрузился, email нет
+    }  # e.ru: браузер вернул совсем пусто (сайт не загрузился)
 
-    harness.run([row("Ra", "https://a.ru"), row("Rb", "https://b.ru"),
-                 row("Rc", "https://c.ru"), row("Rd", "https://d.ru")])
+    harness.run([row("Ra", "https://a.ru"), row("Rb", "https://b.ru"), row("Rc", "https://c.ru"),
+                 row("Rd", "https://d.ru"), row("Re", "https://e.ru")])
 
     saved = json.loads((tmp_path / CACHE_PATH).read_text(encoding="utf-8"))
     assert {host: (entry["status"], entry["via"]) for host, entry in saved.items()} == {
         "a.ru": ("found", "static"), "b.ru": ("found", "browser"),
-        "c.ru": ("dead", "static"), "d.ru": ("none", "browser"),
+        "c.ru": ("dead", "static"), "d.ru": ("none", "browser"), "e.ru": ("dead", "browser"),
     }
     assert saved["a.ru"]["contacts"]["email"] == "info@a.ru"
     assert saved["a.ru"]["contacts"]["all_emails"] == "info@a.ru | sales@a.ru"
