@@ -16,6 +16,7 @@ import random
 import re
 import time
 import xml.etree.ElementTree as ET
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from urllib.parse import urljoin, urlparse
@@ -23,6 +24,7 @@ from urllib.parse import urljoin, urlparse
 from playwright.async_api import async_playwright
 
 from config.hosts import host_of
+from parsers.enrich_cache import CONTACT_KEYS, EnrichCache
 from parsers.site_finder import find_website
 from parsers.vk_email import extract_email_from_vk_async
 from utils.browser import create_browser_context
@@ -139,6 +141,13 @@ def _env_flag(name: str, default: bool) -> bool:
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
+def _cache_path_from_env() -> str:
+    raw = (os.getenv("ENRICH_CACHE") or "").strip()
+    if raw.lower() in ("0", "off", "false", "no", "none"):
+        return ""
+    return raw or "output/enrich_cache.json"
+
+
 @dataclass(frozen=True)
 class EnrichSettings:
     """Настройки добора контактов (все из окружения; значения по умолчанию — email-first).
@@ -148,6 +157,9 @@ class EnrichSettings:
     ENRICH_EMAIL_ONLY     1 — обрабатывать только строки без email; 0 — как раньше: любая нехватка поля
     ENRICH_STATIC_PARALLEL параллельность статического прохода
     ENRICH_MAX_PATHS      сколько типовых контактных путей пробовать в браузере (раньше — все 45)
+    ENRICH_PARALLEL       сколько страниц одного браузера работает одновременно
+    ENRICH_CACHE          файл памяти между прогонами (0/off — отключить)
+    ENRICH_RECHECK_DAYS   через сколько дней перепроверять сайт, где ничего не нашли
     SITE_FINDER           1 — искать сайт через DuckDuckGo для записей без website
     """
 
@@ -157,6 +169,9 @@ class EnrichSettings:
     email_only: bool = True
     static_parallel: int = 16
     max_paths: int = 12
+    parallel: int = 3
+    cache_path: str = "output/enrich_cache.json"
+    recheck_days: int = 14
 
     @classmethod
     def from_env(cls) -> "EnrichSettings":
@@ -167,6 +182,9 @@ class EnrichSettings:
             email_only=_env_flag("ENRICH_EMAIL_ONLY", True),
             static_parallel=max(1, _env_int("ENRICH_STATIC_PARALLEL", 16)),
             max_paths=max(1, _env_int("ENRICH_MAX_PATHS", 12)),
+            parallel=max(1, _env_int("ENRICH_PARALLEL", 3)),
+            cache_path=_cache_path_from_env(),
+            recheck_days=max(1, _env_int("ENRICH_RECHECK_DAYS", 14)),
         )
 
 
@@ -223,6 +241,26 @@ def _apply_static(row: dict, result) -> bool:
             row.get("all_phones") or row.get("phone", ""), " | ".join(result.phones), phones=True
         )
     return got_email
+
+
+def _apply_contacts(row: dict, contacts: dict) -> None:
+    """Применить сохранённые в памяти контакты к свежей строке (без сети)."""
+    for field in ("email", "phone", "address", "social"):
+        if contacts.get(field) and not row.get(field):
+            row[field] = contacts[field]
+    for multi, primary in (("all_emails", "email"), ("all_phones", "phone"), ("all_socials", "social")):
+        if contacts.get(multi):
+            row[multi] = _merge_flat_contacts(
+                row.get(multi) or row.get(primary, ""), contacts[multi], phones=(multi == "all_phones")
+            )
+    # правила шлюза развиваются, а запись в памяти живёт до 60 дней — чистим заново
+    row["email"], row["all_emails"] = sanitize_row_emails(
+        row.get("email", ""), row.get("all_emails", ""), host_of(row.get("website", ""))
+    )
+
+
+def _contacts_of(row: dict) -> dict:
+    return {key: row.get(key, "") for key in CONTACT_KEYS if row.get(key)}
 
 
 def _apply_browser_result(row: dict, result: tuple[str, ...], needs: dict[str, bool]) -> None:
@@ -712,48 +750,54 @@ async def enrich_from_website(
     return result()
 
 
-async def _browser_phase(rows: list[dict], indices: list[int], settings: EnrichSettings, flush) -> int:
-    """Обход сайтов браузером (остаток после статики). Возвращает число посещённых сайтов."""
-    visited = 0
-    since_flush = 0
-    by_host: dict[str, tuple[str, ...]] = {}
+async def _browser_phase(rows: list[dict], indices: list[int], settings: EnrichSettings, flush,
+                         cache: EnrichCache | None = None) -> int:
+    """Обход сайтов браузером (остаток после статики). Строки группируются по домену:
+    сайт открывается один раз, результат применяется ко всем строкам домена. Страницы
+    одного браузера работают параллельно (ENRICH_PARALLEL). Возвращает число сайтов."""
+    groups: dict[str, list[int]] = {}
+    for i in indices:
+        website = (rows[i].get("website") or "").strip()
+        groups.setdefault(host_of(website) if website else f"#row{i}", []).append(i)
+    queue = deque(groups.items())
+    state = {"visited": 0, "since_flush": 0, "limit_reported": False}
     empty = ("", "", "", "", "", "", "")
     need = frozenset({"email"}) if settings.email_only else None
-    async with async_playwright() as p:
-        browser, context = await create_browser_context(p, headless=True)
-        page = await context.new_page()
-        for i in indices:
-            row = rows[i]
-            if settings.max_sites and visited >= settings.max_sites:
-                print(f"\n[email_finder] достигнут лимит ENRICH_MAX_SITES={settings.max_sites}, "
-                      f"остальные записи — в следующем прогоне")
-                break
-            if settings.site_finder and not (row.get("website") or "").strip():
-                found = find_website(row.get("name", ""), row.get("city", ""))
-                if found:
-                    row["website"] = found
-                    print(f"[site_finder] {row.get('name')} → {found}")
-            if not (row.get("website") or "").strip():
-                continue
+
+    def checkpoint() -> None:
+        state["since_flush"] += 1
+        if state["since_flush"] >= 25:  # каждые ~25 сайтов сохраняем прогресс на диск
+            state["since_flush"] = 0
+            flush()
+            if cache is not None:
+                cache.save()
+
+    async def visit(page, host: str, members: list[int]) -> bool:
+        """True, если сайт действительно посещён (а не пропущен)."""
+        first = rows[members[0]]
+        if settings.site_finder and not (first.get("website") or "").strip():
+            found = await asyncio.to_thread(find_website, first.get("name", ""), first.get("city", ""))
+            if found:
+                first["website"] = found
+                print(f"[site_finder] {first.get('name')} → {found}")
+        website = (first.get("website") or "").strip()
+        if not website:
+            return False
+        host = host_of(website)
+        print(f"  [{members[0] + 1}/{len(rows)}] {first.get('name','?')} → {website}")
+        try:
+            result = await enrich_from_website(
+                page, website, include_all=True, need=need, max_paths=settings.max_paths
+            )
+        except Exception as e:
+            print(f"    ошибка: {e}")
+            result = empty
+        for idx in members:
+            row = rows[idx]
             needs = _row_needs(row)
             if not (needs["email"] if settings.email_only else any(needs.values())):
                 continue
-            host = host_of(row["website"])
-            result = by_host.get(host)
-            fresh = result is None
-            if fresh:
-                visited += 1
-                print(f"  [{i + 1}/{len(rows)}] {row.get('name','?')} → {row['website']}")
-                try:
-                    result = await enrich_from_website(
-                        page, row["website"], include_all=True, need=need, max_paths=settings.max_paths
-                    )
-                except Exception as e:
-                    print(f"    ошибка: {e}")
-                    result = empty
-                by_host[host] = result
             _apply_browser_result(row, result, needs)
-
             # VK fallback: email не найден, а в записи есть страница VK
             if not row.get("email") and "vk.com" in (row.get("social") or ""):
                 try:
@@ -764,15 +808,38 @@ async def _browser_phase(rows: list[dict], indices: list[int], settings: EnrichS
                         print(f"[vk_email] {row.get('name')} → {vk_email}")
                 except Exception:
                     pass
+        if cache is not None and host:
+            with_email = next((rows[idx] for idx in members if rows[idx].get("email")), None)
+            if with_email is not None:
+                cache.record(host, status="found", via="browser", contacts=_contacts_of(with_email))
+            else:
+                cache.record(host, status="none", via="browser")
+        return True
 
-            since_flush += 1
-            if since_flush >= 25:  # каждые ~25 сайтов сохраняем прогресс на диск
-                flush()
-                since_flush = 0
-            if fresh:
+    async with async_playwright() as p:
+        browser, context = await create_browser_context(p, headless=True)
+
+        async def worker() -> None:
+            page = await context.new_page()
+            while queue:
+                host, members = queue.popleft()
+                if settings.max_sites and state["visited"] >= settings.max_sites:
+                    if not state["limit_reported"]:
+                        state["limit_reported"] = True
+                        print(f"\n[email_finder] достигнут лимит ENRICH_MAX_SITES={settings.max_sites}, "
+                              f"остальные записи — в следующем прогоне")
+                    queue.clear()
+                    return
+                state["visited"] += 1  # место в бюджете занимаем до первого await
+                if not await visit(page, host, members):
+                    state["visited"] -= 1
+                    continue
+                checkpoint()
                 await asyncio.sleep(random.uniform(1.2, 2.5))
+
+        await asyncio.gather(*(worker() for _ in range(max(1, min(settings.parallel, len(groups))))))
         await browser.close()
-    return visited
+    return state["visited"]
 
 
 async def run_enrichment(input_csv: str):
@@ -803,11 +870,26 @@ async def run_enrichment(input_csv: str):
 
     settings = EnrichSettings.from_env()
     order = _visit_order(rows, settings)
+    cache = EnrichCache.load(settings.cache_path, none_days=settings.recheck_days) if settings.cache_path else None
+    if cache is not None:
+        pending, hits = [], 0
+        for i in order:
+            website = (rows[i].get("website") or "").strip()
+            entry = cache.lookup(host_of(website)) if website else None
+            if entry is None:
+                pending.append(i)
+                continue
+            hits += 1
+            if entry["status"] == "found":
+                _apply_contacts(rows[i], entry.get("contacts") or {})
+        order = pending
+        print(f"[cache] пропущено по памяти прошлых прогонов: {hits}")
     print(
         f"\n=== Email Finder: к обработке {len(order)}/{len(rows)} объектов "
         f"(статика: {'вкл' if settings.static else 'выкл'}, только без email: "
         f"{'да' if settings.email_only else 'нет'}, лимит браузера за прогон: "
-        f"{settings.max_sites or 'нет'}, site_finder: {'вкл' if settings.site_finder else 'выкл'}) ==="
+        f"{settings.max_sites or 'нет'}, параллельно страниц: {settings.parallel}, "
+        f"site_finder: {'вкл' if settings.site_finder else 'выкл'}) ==="
     )
 
     # Заранее подбираем client_type для строк без него (CSV из старой схемы).
@@ -856,6 +938,15 @@ async def run_enrichment(input_csv: str):
                 dead = sum(1 for result in static_results.values() if result.kind == "dead")
                 print(f"[static] сайтов {len(static_results)}, email найден у {applied} строк, "
                       f"недоступны {dead}, {time.monotonic() - started:.0f} с")
+                if cache is not None:
+                    for host, result in static_results.items():
+                        if result.found:
+                            contacts = {"email": result.emails[0], "all_emails": " | ".join(result.emails)}
+                            if result.phones:
+                                contacts.update(phone=result.phones[0], all_phones=" | ".join(result.phones))
+                            cache.record(host, status="found", via="static", contacts=contacts)
+                        elif result.kind == "dead":
+                            cache.record(host, status="dead", via="static")
                 _flush_csv()
 
         browser_order = [
@@ -864,13 +955,18 @@ async def run_enrichment(input_csv: str):
         ]
         print(f"[browser] к обходу браузером: {len(browser_order)}")
         if browser_order:
-            await _browser_phase(rows, browser_order, settings, _flush_csv)
+            await _browser_phase(rows, browser_order, settings, _flush_csv, cache)
     finally:
         # Гарантированный финальный flush — даже если поймали Exception или TERM.
         try:
             _flush_csv()
         except Exception as e:
             print(f"[email_finder] финальный flush упал: {e}")
+        if cache is not None:
+            try:
+                cache.save()
+            except Exception as e:
+                print(f"[email_finder] память прогонов не сохранена: {e}")
 
     print(f"\n✅ Обогащённый файл: {OUTPUT_FILE}")
     return OUTPUT_FILE

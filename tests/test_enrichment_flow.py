@@ -14,6 +14,7 @@ ENV_KEYS = (
     "ENRICH_MAX_SITES", "ENRICH_STATIC", "ENRICH_EMAIL_ONLY", "SITE_FINDER", "ENRICH_MAX_PATHS",
     "ENRICH_STATIC_PARALLEL", "ENRICH_PARALLEL", "ENRICH_CACHE", "ENRICH_RECHECK_DAYS",
 )
+CACHE_PATH = "output/enrich_cache.json"
 EMPTY_BROWSER = ("", "", "", "", "", "", "")
 
 
@@ -52,7 +53,7 @@ def harness(monkeypatch, tmp_path):
         monkeypatch.delenv(key, raising=False)
     state = SimpleNamespace(
         browser_calls=[], static_calls=[], launches=0, vk={},
-        browser_results={}, static_results={},
+        browser_results={}, static_results={}, active=0, peak=0, delay=0,
     )
     monkeypatch.setattr(email_finder, "OUTPUT_FILE", str(tmp_path / "out.csv"))
     monkeypatch.setattr(email_finder, "async_playwright", lambda: FakePlaywright())
@@ -64,6 +65,11 @@ def harness(monkeypatch, tmp_path):
 
     async def fake_enrich(page, website, include_all=False, **kwargs):
         state.browser_calls.append({"website": website, **kwargs})
+        state.active += 1
+        state.peak = max(state.peak, state.active)
+        if state.delay:
+            await asyncio.sleep(state.delay)
+        state.active -= 1
         return state.browser_results.get(website, EMPTY_BROWSER)
 
     async def fake_static(websites, **kwargs):
@@ -208,3 +214,94 @@ def test_settings_defaults_and_overrides(monkeypatch):
     custom = email_finder.EnrichSettings.from_env()
     assert (custom.max_sites, custom.static, custom.email_only, custom.max_paths) == (0, False, False, 45)
     assert custom.static_parallel == 16  # некорректное значение → по умолчанию
+
+
+# --- параллельный браузерный этап ------------------------------------------------
+
+def test_parallel_workers_share_one_browser_and_stay_bounded(harness, monkeypatch):
+    monkeypatch.setenv("ENRICH_STATIC", "0")
+    monkeypatch.setenv("ENRICH_PARALLEL", "3")
+    harness.delay = 0.02
+    harness.run([row(f"R{i}", f"https://s{i}.ru") for i in range(7)])
+    assert harness.launches == 1
+    assert harness.peak == 3
+    assert len(harness.browser_calls) == 7
+
+
+def test_same_host_rows_are_visited_once_and_share_the_result(harness, monkeypatch):
+    monkeypatch.setenv("ENRICH_STATIC", "0")
+    harness.browser_results = {"https://chain.ru/a": ("info@chain.ru", "", "", "", "info@chain.ru", "", "")}
+    out = harness.run([row("Filial1", "https://chain.ru/a"), row("Filial2", "https://www.chain.ru/b")])
+    assert len(harness.browser_calls) == 1
+    assert out["Filial1"]["email"] == out["Filial2"]["email"] == "info@chain.ru"
+
+
+def test_budget_with_parallel_workers_is_exact(harness, monkeypatch):
+    monkeypatch.setenv("ENRICH_STATIC", "0")
+    monkeypatch.setenv("ENRICH_PARALLEL", "3")
+    monkeypatch.setenv("ENRICH_MAX_SITES", "2")
+    harness.delay = 0.01
+    harness.run([row(f"R{i}", f"https://s{i}.ru") for i in range(6)])
+    assert len(harness.browser_calls) == 2
+
+
+# --- память между прогонами ------------------------------------------------------
+
+def seed_cache(tmp_path, entries):
+    import json
+    path = tmp_path / CACHE_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(entries), encoding="utf-8")
+
+
+def stamp(days_ago=0):
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat(timespec="seconds")
+
+
+def test_cache_hit_applies_contacts_without_network_and_stale_entries_are_rechecked(harness, tmp_path):
+    seed_cache(tmp_path, {
+        "a.ru": {"checked_at": stamp(3), "status": "found", "via": "browser",
+                 "contacts": {"email": "info@a.ru", "all_emails": "info@a.ru", "phone": "+7 (978) 111-22-33"}},
+        "b.ru": {"checked_at": stamp(3), "status": "none", "via": "browser", "contacts": {}},
+        "c.ru": {"checked_at": stamp(30), "status": "none", "via": "browser", "contacts": {}},
+    })
+    harness.static_results = {"c.ru": static_ok("https://c.ru"), "d.ru": static_ok("https://d.ru")}
+
+    out = harness.run([row("Ra", "https://a.ru"), row("Rb", "https://b.ru"),
+                       row("Rc", "https://c.ru"), row("Rd", "https://d.ru")])
+
+    assert out["Ra"]["email"] == "info@a.ru" and out["Ra"]["all_emails"] == "info@a.ru"
+    assert out["Rb"]["email"] == ""
+    assert harness.static_calls == [["https://c.ru", "https://d.ru"]]
+    assert [call["website"] for call in harness.browser_calls] == ["https://c.ru", "https://d.ru"]
+
+
+def test_cache_is_updated_after_the_run(harness, tmp_path):
+    import json
+    harness.static_results = {
+        "a.ru": static_ok("https://a.ru", ["info@a.ru", "sales@a.ru"], ["+7 (978) 111-22-33"]),
+        "b.ru": static_ok("https://b.ru"),
+        "c.ru": static_ok("https://c.ru", kind="dead"),
+        "d.ru": static_ok("https://d.ru"),
+    }
+    harness.browser_results = {"https://b.ru": ("info@b.ru", "", "", "", "info@b.ru", "", "")}
+
+    harness.run([row("Ra", "https://a.ru"), row("Rb", "https://b.ru"),
+                 row("Rc", "https://c.ru"), row("Rd", "https://d.ru")])
+
+    saved = json.loads((tmp_path / CACHE_PATH).read_text(encoding="utf-8"))
+    assert {host: (entry["status"], entry["via"]) for host, entry in saved.items()} == {
+        "a.ru": ("found", "static"), "b.ru": ("found", "browser"),
+        "c.ru": ("dead", "static"), "d.ru": ("none", "browser"),
+    }
+    assert saved["a.ru"]["contacts"]["email"] == "info@a.ru"
+    assert saved["a.ru"]["contacts"]["all_emails"] == "info@a.ru | sales@a.ru"
+    assert saved["b.ru"]["contacts"]["email"] == "info@b.ru"
+
+
+def test_cache_can_be_disabled(harness, tmp_path, monkeypatch):
+    monkeypatch.setenv("ENRICH_CACHE", "0")
+    harness.static_results = {"a.ru": static_ok("https://a.ru", ["info@a.ru"])}
+    harness.run([row("Ra", "https://a.ru")])
+    assert not (tmp_path / CACHE_PATH).exists()
