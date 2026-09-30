@@ -266,3 +266,16 @@ def test_build_outreach_skips_signals_in_dry_run_and_reports_missing_exclusion_f
     assert summary["web_signals"] == "skipped"
     assert summary["segments"]["ready_by_segment"] == {"stroitelstvo": 1}
     assert any("missing.csv" in warning for warning in summary["warnings"])
+
+
+def test_main_makes_redirected_output_line_buffered():
+    """Вывод в файл/пайп должен идти построчно: иначе лог долгого этапа молчит минутами."""
+    import subprocess
+    import sys
+
+    root = Path(main.__file__).resolve().parent
+    result = subprocess.run(
+        [sys.executable, "-c", "import main, sys; print(sys.stdout.line_buffering)"],
+        cwd=root, capture_output=True, text=True, timeout=120,
+    )
+    assert result.stdout.strip().splitlines()[-1] == "True", result.stderr[-400:]

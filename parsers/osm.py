@@ -7,8 +7,9 @@ config/segments.py (shop/office/craft/amenity/...). Каждая точка пр
 import json
 import os
 import re
+import time
 from datetime import datetime
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from urllib.request import Request
 
 from utils.http_retry import http_request
@@ -19,10 +20,15 @@ from utils.storage import save_item
 from utils.geo_city import detect_city_by_coords, normalize_city_name
 from utils.crimea_boundary import is_in_crimea
 
+# Порядок важен: первыми идут проверенные зеркала. Список можно заменить переменной
+# OVERPASS_ENDPOINTS (адреса через ; или запятую) — например, когда сеть режет часть зеркал.
 OVERPASS_ENDPOINTS = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
     "https://lz4.overpass-api.de/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+    "https://overpass.osm.ch/api/interpreter",
+    "https://overpass.openstreetmap.fr/api/interpreter",
 ]
 
 # Overpass быстрее и надёжнее отдаёт bbox, чем тяжёлый area-query. После ответа
@@ -155,23 +161,50 @@ def _phones(tags: dict) -> list[str]:
     return [_normalize_phone(value) for value in values]
 
 
+def _overpass_endpoints() -> list[str]:
+    raw = os.getenv("OVERPASS_ENDPOINTS", "")
+    custom = [part.strip() for part in re.split(r"[;,\s]+", raw) if part.strip()]
+    return custom or list(OVERPASS_ENDPOINTS)
+
+
+def _env_seconds(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(name) or default))
+    except ValueError:
+        return default
+
+
 def _fetch_overpass() -> list:
+    """Тяжёлый запрос (минуты). Зеркала перебираются по очереди; ход виден построчно,
+    общее ожидание ограничено OVERPASS_TOTAL_TIMEOUT, ожидание одного зеркала — OVERPASS_TIMEOUT."""
     body = urlencode({"data": QUERY}).encode("utf-8")
+    timeout = _env_seconds("OVERPASS_TIMEOUT", 240)
+    budget = _env_seconds("OVERPASS_TOTAL_TIMEOUT", 900)
+    endpoints = _overpass_endpoints()
+    started = time.monotonic()
     last_err = None
-    for url in OVERPASS_ENDPOINTS:
+    for number, url in enumerate(endpoints, start=1):
+        if number > 1 and time.monotonic() - started >= budget:
+            print(f"  [OSM] общий лимит ожидания {budget} с исчерпан — остальные зеркала не пробуем", flush=True)
+            break
+        host = urlparse(url).netloc or url
+        print(f"  [OSM] зеркало {number}/{len(endpoints)}: {host} "
+              f"(ждём до {timeout} с; запрос тяжёлый, это может занять минуты)", flush=True)
+        attempt = time.monotonic()
         try:
             req = Request(
                 url, data=body,
                 headers={"User-Agent": "b2b_parser/1.0", "Content-Type": "application/x-www-form-urlencoded"},
                 method="POST",
             )
-            raw = http_request(req, timeout=240)
-            data = json.loads(raw.decode("utf-8"))
-            return data.get("elements", [])
-        except (URLError, HTTPError, TimeoutError, json.JSONDecodeError) as e:
-            print(f"  [OSM] {url} fail: {e}")
+            raw = http_request(req, timeout=timeout)
+            elements = json.loads(raw.decode("utf-8")).get("elements", [])
+            print(f"  [OSM] ответ от {host} за {time.monotonic() - attempt:.0f} с, объектов: {len(elements)}",
+                  flush=True)
+            return elements
+        except (URLError, HTTPError, OSError, json.JSONDecodeError) as e:
+            print(f"  [OSM] {host}: сбой через {time.monotonic() - attempt:.0f} с: {e}", flush=True)
             last_err = e
-            continue
     raise RuntimeError(f"OSM: все Overpass endpoints недоступны: {last_err}")
 
 
