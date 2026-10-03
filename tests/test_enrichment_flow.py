@@ -11,7 +11,7 @@ from parsers.static_contacts import StaticResult
 from utils.storage import FIELDS
 
 ENV_KEYS = (
-    "ENRICH_MAX_SITES", "ENRICH_STATIC", "ENRICH_EMAIL_ONLY", "SITE_FINDER", "ENRICH_MAX_PATHS",
+    "ENRICH_MAX_SITES", "ENRICH_VISIT_TIMEOUT", "ENRICH_STATIC", "ENRICH_EMAIL_ONLY", "SITE_FINDER", "ENRICH_MAX_PATHS",
     "ENRICH_STATIC_PARALLEL", "ENRICH_PARALLEL", "ENRICH_CACHE", "ENRICH_RECHECK_DAYS",
 )
 CACHE_PATH = "output/enrich_cache.json"
@@ -71,7 +71,7 @@ def harness(monkeypatch, tmp_path):
     state = SimpleNamespace(
         browser_calls=[], static_calls=[], launches=0, vk={},
         browser_results={}, static_results={}, active=0, peak=0, delay=0,
-        pages=0, fail_new_page_at=0, browser_closed=False, enrich_errors={}, dead_pages=set(),
+        pages=0, fail_new_page_at=0, browser_closed=False, enrich_errors={}, dead_pages=set(), hang=set(),
     )
     monkeypatch.setattr(email_finder, "OUTPUT_FILE", str(tmp_path / "out.csv"))
     monkeypatch.setattr(email_finder, "async_playwright", lambda: FakePlaywright())
@@ -85,6 +85,8 @@ def harness(monkeypatch, tmp_path):
         state.browser_calls.append({"website": website, **kwargs})
         if website in state.enrich_errors:
             raise state.enrich_errors[website]
+        if website in state.hang:
+            await asyncio.sleep(3600)  # зависший рендерер: evaluate/content без собственного таймаута
         if getattr(page, "number", None) in state.dead_pages:
             return EMPTY_BROWSER  # упавшая страница ничего не загружает
         state.active += 1
@@ -454,3 +456,19 @@ def test_page_is_recreated_after_an_empty_result_so_a_crashed_page_costs_one_sit
     assert cache["a.ru"]["status"] == "dead"  # пустой ответ: перепроверка через неделю
     assert out["B"]["email"] == "info@b.ru"  # страница пересоздана, следующий сайт обработан нормально
     assert harness.pages == 2
+
+
+def test_a_hanging_visit_is_cut_off_and_does_not_block_the_run(harness, tmp_path, monkeypatch):
+    import json
+
+    monkeypatch.setenv("ENRICH_STATIC", "0")
+    monkeypatch.setenv("ENRICH_PARALLEL", "2")
+    monkeypatch.setenv("ENRICH_VISIT_TIMEOUT", "1")
+    harness.hang = {"https://a.ru"}
+    harness.browser_results = {"https://b.ru": ("info@b.ru", "", "", "", "info@b.ru", "", "")}
+    out = harness.run([row("A", "https://a.ru"), row("B", "https://b.ru"), row("C", "https://c.ru")])
+    assert out["B"]["email"] == "info@b.ru"
+    assert len(harness.browser_calls) == 3  # прогон дошёл до конца
+    cache = json.loads((tmp_path / CACHE_PATH).read_text(encoding="utf-8"))
+    assert cache["a.ru"]["status"] == "dead"  # зависший сайт перепроверим через неделю
+    assert harness.pages >= 3  # страница после зависания пересоздана

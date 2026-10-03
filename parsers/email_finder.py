@@ -158,6 +158,7 @@ class EnrichSettings:
     ENRICH_STATIC_PARALLEL параллельность статического прохода
     ENRICH_MAX_PATHS      сколько типовых контактных путей пробовать в браузере (раньше — все 45)
     ENRICH_PARALLEL       сколько страниц одного браузера работает одновременно
+    ENRICH_VISIT_TIMEOUT  предел на один сайт, секунд: зависший рендерер не должен вешать прогон
     ENRICH_CACHE          файл памяти между прогонами (0/off — отключить)
     ENRICH_RECHECK_DAYS   через сколько дней перепроверять сайт, где ничего не нашли
     SITE_FINDER           1 — искать сайт через DuckDuckGo для записей без website
@@ -170,6 +171,7 @@ class EnrichSettings:
     static_parallel: int = 16
     max_paths: int = 12
     parallel: int = 3
+    visit_timeout: int = 120
     cache_path: str = "output/enrich_cache.json"
     recheck_days: int = 14
 
@@ -183,6 +185,7 @@ class EnrichSettings:
             static_parallel=max(1, _env_int("ENRICH_STATIC_PARALLEL", 16)),
             max_paths=max(1, _env_int("ENRICH_MAX_PATHS", 12)),
             parallel=max(1, _env_int("ENRICH_PARALLEL", 3)),
+            visit_timeout=max(10, _env_int("ENRICH_VISIT_TIMEOUT", 120)),
             cache_path=_cache_path_from_env(),
             recheck_days=max(1, _env_int("ENRICH_RECHECK_DAYS", 14)),
         )
@@ -801,9 +804,13 @@ async def _browser_phase(rows: list[dict], indices: list[int], settings: EnrichS
         host = host_of(website)
         print(f"  [{members[0] + 1}/{len(rows)}] {first.get('name','?')} → {website}")
         try:
-            result = await enrich_from_website(
-                page, website, include_all=True, need=need, max_paths=settings.max_paths
+            result = await asyncio.wait_for(
+                enrich_from_website(page, website, include_all=True, need=need, max_paths=settings.max_paths),
+                settings.visit_timeout,
             )
+        except asyncio.TimeoutError:
+            print(f"    сайт обрабатывается дольше {settings.visit_timeout} с — пропускаем")
+            result = ("", "", "", "", "", "", "")
         except Exception as e:
             print(f"    ошибка: {e}")
             return "failed"
@@ -846,7 +853,7 @@ async def _browser_phase(rows: list[dict], indices: list[int], settings: EnrichS
                     # Пустой результат или исключение: страница могла упасть или зависнуть на
                     # прошлой навигации. Пересоздать дёшево, а проверять живость ненадёжно.
                     try:
-                        await page.close()
+                        await asyncio.wait_for(page.close(), 10)
                     except Exception:
                         pass
                     page = await context.new_page()
