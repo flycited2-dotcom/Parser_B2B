@@ -188,8 +188,9 @@ def _fetch_overpass() -> list:
             print(f"  [OSM] общий лимит ожидания {budget} с исчерпан — остальные зеркала не пробуем", flush=True)
             break
         host = urlparse(url).netloc or url
+        wait = min(timeout, max(1, int(budget - (time.monotonic() - started))))
         print(f"  [OSM] зеркало {number}/{len(endpoints)}: {host} "
-              f"(ждём до {timeout} с; запрос тяжёлый, это может занять минуты)", flush=True)
+              f"(ждём до {wait} с; запрос тяжёлый, это может занять минуты)", flush=True)
         attempt = time.monotonic()
         try:
             req = Request(
@@ -197,7 +198,7 @@ def _fetch_overpass() -> list:
                 headers={"User-Agent": "b2b_parser/1.0", "Content-Type": "application/x-www-form-urlencoded"},
                 method="POST",
             )
-            raw = http_request(req, timeout=timeout)
+            raw = http_request(req, timeout=wait, retries=0)
             elements = json.loads(raw.decode("utf-8")).get("elements", [])
             print(f"  [OSM] ответ от {host} за {time.monotonic() - attempt:.0f} с, объектов: {len(elements)}",
                   flush=True)

@@ -154,3 +154,18 @@ def test_prepass_ignores_social_and_platform_urls():
     results = run(sc.static_prepass(sites, fetch=fetch))
     assert sorted(results) == ["site.ru"]
     assert calls == ["https://site.ru/"]
+
+
+def test_only_stable_failures_count_as_dead_for_the_browser_decision():
+    import ssl
+
+    def kind_for(error_or_status):
+        pages = {"https://x.ru/": error_or_status, "http://x.ru/": error_or_status}
+        return run(sc.fetch_static_contacts("https://x.ru/", fetch=fake_fetch(pages))).kind
+
+    assert kind_for(TimeoutError("slow")) == "unknown"  # браузер может загрузить
+    assert kind_for(ssl.SSLError("incomplete chain")) == "unknown"
+    assert kind_for((503, "")) == "unknown"
+    assert kind_for(OSError("connection refused")) == "dead"
+    assert kind_for((404, "")) == "dead"
+    assert kind_for(UnsafeURLError("DNS resolution failed for x.ru")) == "dead"

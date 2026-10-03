@@ -753,6 +753,23 @@ async def enrich_from_website(
     return result()
 
 
+async def _page_alive(page) -> bool:
+    try:
+        await asyncio.wait_for(page.evaluate("1"), 5)
+        return True
+    except Exception:
+        return False
+
+
+def _contacts_from_result(result: tuple[str, ...], host: str) -> dict:
+    """Контакты для памяти — только то, что нашёл сам визит (очищенное шлюзом), без полей строки."""
+    email, phone, address, social, all_emails, all_phones, all_socials = result
+    email, all_emails = sanitize_row_emails(email, all_emails, host)
+    contacts = {"email": email, "all_emails": all_emails, "phone": phone, "all_phones": all_phones,
+                "address": address, "social": social, "all_socials": all_socials}
+    return {key: value for key, value in contacts.items() if value}
+
+
 async def _browser_phase(rows: list[dict], indices: list[int], settings: EnrichSettings, flush,
                          cache: EnrichCache | None = None) -> int:
     """Обход сайтов браузером (остаток после статики). Строки группируются по домену:
@@ -764,7 +781,6 @@ async def _browser_phase(rows: list[dict], indices: list[int], settings: EnrichS
         groups.setdefault(host_of(website) if website else f"#row{i}", []).append(i)
     queue = deque(groups.items())
     state = {"visited": 0, "since_flush": 0, "limit_reported": False}
-    empty = ("", "", "", "", "", "", "")
     need = frozenset({"email"}) if settings.email_only else None
 
     def checkpoint() -> None:
@@ -773,10 +789,13 @@ async def _browser_phase(rows: list[dict], indices: list[int], settings: EnrichS
             state["since_flush"] = 0
             flush()
             if cache is not None:
-                cache.save()
+                try:
+                    cache.save()
+                except Exception as e:
+                    print(f"[email_finder] память прогонов не сохранена: {e}")
 
-    async def visit(page, host: str, members: list[int]) -> bool:
-        """True, если сайт действительно посещён (а не пропущен)."""
+    async def visit(page, members: list[int]) -> str:
+        """'visited' | 'skipped' (нет сайта) | 'failed' (сбой браузера: не кэшируется и не тратит бюджет)."""
         first = rows[members[0]]
         if settings.site_finder and not (first.get("website") or "").strip():
             found = await asyncio.to_thread(find_website, first.get("name", ""), first.get("city", ""))
@@ -785,7 +804,7 @@ async def _browser_phase(rows: list[dict], indices: list[int], settings: EnrichS
                 print(f"[site_finder] {first.get('name')} → {found}")
         website = (first.get("website") or "").strip()
         if not website:
-            return False
+            return "skipped"
         host = host_of(website)
         print(f"  [{members[0] + 1}/{len(rows)}] {first.get('name','?')} → {website}")
         try:
@@ -794,7 +813,10 @@ async def _browser_phase(rows: list[dict], indices: list[int], settings: EnrichS
             )
         except Exception as e:
             print(f"    ошибка: {e}")
-            result = empty
+            return "failed"
+        if not any(result) and not await _page_alive(page):
+            print("    страница браузера недоступна — пересоздаём")
+            return "failed"
         for idx in members:
             row = rows[idx]
             needs = _row_needs(row)
@@ -802,15 +824,15 @@ async def _browser_phase(rows: list[dict], indices: list[int], settings: EnrichS
                 continue
             _apply_browser_result(row, result, needs)
         if cache is not None and host:
-            with_email = next((rows[idx] for idx in members if rows[idx].get("email")), None)
-            if with_email is not None:
-                cache.record(host, status="found", via="browser", contacts=_contacts_of(with_email))
+            contacts = _contacts_from_result(result, host)
+            if contacts.get("email"):
+                cache.record(host, status="found", via="browser", contacts=contacts)
             elif any(result):
                 cache.record(host, status="none", via="browser")
             else:
-                # совсем пустой ответ — сайт, скорее всего, не загрузился: перепроверим через неделю
+                # совсем пустой ответ живой страницы — сайт, скорее всего, не загрузился: через неделю
                 cache.record(host, status="dead", via="browser")
-        return True
+        return "visited"
 
     async with async_playwright() as p:
         browser, context = await create_browser_context(p, headless=True)
@@ -818,7 +840,7 @@ async def _browser_phase(rows: list[dict], indices: list[int], settings: EnrichS
         async def worker() -> None:
             page = await context.new_page()
             while queue:
-                host, members = queue.popleft()
+                _host, members = queue.popleft()
                 if settings.max_sites and state["visited"] >= settings.max_sites:
                     if not state["limit_reported"]:
                         state["limit_reported"] = True
@@ -827,14 +849,31 @@ async def _browser_phase(rows: list[dict], indices: list[int], settings: EnrichS
                     queue.clear()
                     return
                 state["visited"] += 1  # место в бюджете занимаем до первого await
-                if not await visit(page, host, members):
+                outcome = await visit(page, members)
+                if outcome != "visited":
                     state["visited"] -= 1
+                    if outcome == "failed":
+                        try:
+                            await page.close()
+                        except Exception:
+                            pass
+                        page = await context.new_page()
                     continue
                 checkpoint()
                 await asyncio.sleep(random.uniform(1.2, 2.5))
 
-        await asyncio.gather(*(worker() for _ in range(max(1, min(settings.parallel, len(groups))))))
-        await browser.close()
+        tasks = [asyncio.create_task(worker()) for _ in range(max(1, min(settings.parallel, len(groups))))]
+        try:
+            await asyncio.gather(*tasks)
+        finally:
+            # сбой одного воркера не должен оставлять остальных работать без присмотра
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            try:
+                await browser.close()
+            except Exception:
+                pass
     return state["visited"]
 
 
@@ -900,9 +939,13 @@ async def run_enrichment(input_csv: str):
             if entry is None:
                 pending.append(i)
                 continue
-            hits += 1
             if entry["status"] == "found":
-                _apply_contacts(rows[i], entry.get("contacts") or {})
+                contacts = entry.get("contacts")
+                _apply_contacts(rows[i], contacts if isinstance(contacts, dict) else {})
+                if not rows[i].get("email"):
+                    pending.append(i)  # шлюз отверг сохранённый адрес (или запись повреждена) — пробуем заново
+                    continue
+            hits += 1
         order = pending
         print(f"[cache] пропущено по памяти прошлых прогонов: {hits}")
     print(
@@ -952,6 +995,13 @@ async def run_enrichment(input_csv: str):
                 static_results = await static_contacts.static_prepass(
                     sites, parallel=settings.static_parallel
                 )
+                dead_hosts = [host for host, result in static_results.items() if result.kind == "dead"]
+                if len(static_results) >= 10 and len(dead_hosts) / len(static_results) >= 0.8:
+                    # почти все «мертвы» — вероятнее сбой нашей сети: браузер пробует, память не клеймит
+                    print(f"[static] {len(dead_hosts)} из {len(static_results)} сайтов недоступны — "
+                          f"похоже на сбой сети, недоступными их не считаем")
+                    for host in dead_hosts:
+                        static_results[host].kind = "unknown"
                 applied = sum(
                     _apply_static(rows[i], static_results.get(host_of(rows[i].get("website", ""))))
                     for i in order

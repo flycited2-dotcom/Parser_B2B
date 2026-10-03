@@ -68,16 +68,18 @@ def test_fetch_falls_through_to_a_working_mirror_and_reports_progress(monkeypatc
     monkeypatch.setattr(osm, "OVERPASS_ENDPOINTS", ["https://one.test/api", "https://two.test/api", "https://three.test/api"])
     calls = []
 
-    def fake_request(req, timeout=0):
-        calls.append((req.full_url, timeout))
+    def fake_request(req, timeout=0, retries=3):
+        calls.append((req.full_url, timeout, retries))
         if "three" not in req.full_url:
             raise URLError("tls handshake failed")
         return json.dumps({"elements": [{"id": 1}, {"id": 2}]}).encode("utf-8")
 
     monkeypatch.setattr(osm, "http_request", fake_request)
     assert osm._fetch_overpass() == [{"id": 1}, {"id": 2}]
-    assert [url for url, _timeout in calls] == ["https://one.test/api", "https://two.test/api", "https://three.test/api"]
-    assert all(timeout == 240 for _url, timeout in calls)
+    assert [url for url, _timeout, _retries in calls] == [
+        "https://one.test/api", "https://two.test/api", "https://three.test/api"]
+    assert all(timeout == 240 for _url, timeout, _retries in calls)
+    assert all(retries == 0 for _url, _timeout, retries in calls)  # зеркала — это и есть повторы
     out = capsys.readouterr().out
     assert "зеркало 1/3" in out and "one.test" in out and "сбой" in out
     assert "ответ от three.test" in out and "объектов: 2" in out
@@ -91,8 +93,11 @@ def test_total_wait_budget_stops_trying_more_mirrors(monkeypatch, capsys):
     calls = []
     monkeypatch.setattr(osm.time, "monotonic", lambda: clock["now"])
 
-    def slow_failure(req, timeout=0):
+    timeouts = []
+
+    def slow_failure(req, timeout=0, retries=3):
         calls.append(req.full_url)
+        timeouts.append((timeout, retries))
         clock["now"] += 400
         raise TimeoutError("read timed out")
 
@@ -100,4 +105,6 @@ def test_total_wait_budget_stops_trying_more_mirrors(monkeypatch, capsys):
     with pytest.raises(RuntimeError, match="Overpass"):
         osm._fetch_overpass()
     assert len(calls) == 3  # после ~1200 с бюджет 900 с исчерпан
+    # ожидание одного зеркала не превышает остаток общего бюджета, повторов внутри зеркала нет
+    assert timeouts == [(240, 0), (240, 0), (100, 0)]
     assert "общий лимит ожидания" in capsys.readouterr().out

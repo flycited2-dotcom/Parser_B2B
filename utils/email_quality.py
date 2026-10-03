@@ -59,6 +59,10 @@ TYPO_PROVIDERS = (
     "mail.ru", "yandex.ru", "gmail.com", "inbox.ru", "rambler.ru", "hotmail.com", "outlook.com", "yahoo.com",
 )
 
+# ROT13 от com/net/info/biz: такие «зоны» не бывают настоящими. Двухбуквенные и org (bet — реальная
+# зона) не входят: info@firma.com.tr не должен превращаться в vasb@svezn.pbz.ge.
+ROT13_UNMISTAKABLE_TLDS = frozenset({"pbz", "arg", "vasb", "ovm"})
+
 _HEX32_RE = re.compile(r"^[0-9a-f]{32}$")
 _LOCAL_RE = re.compile(r"^[\w.+%'-]{1,64}$")
 _LABEL_RE = re.compile(r"^(?!-)[\w-]{1,63}(?<!-)$")
@@ -179,7 +183,12 @@ def sanitize_email(raw: object, site_host: str = "") -> tuple[str | None, str]:
         return None, "invalid_tld"
     if tld not in COMMON_TLDS and not tld.startswith("xn--"):
         decoded = rot13(text)
-        if _syntax_ok(decoded) and _tld(decoded.partition("@")[2]) in COMMON_TLDS:
+        decoded_domain = decoded.partition("@")[2]
+        if (
+            _syntax_ok(decoded)
+            and _tld(decoded_domain) in COMMON_TLDS
+            and (tld in ROT13_UNMISTAKABLE_TLDS or is_related(decoded_domain, site_host))
+        ):
             text, note = decoded, "rot13_decoded"
     local, _, domain = text.partition("@")
     if any(domain == s or domain.endswith("." + s) for s in BLOCK_DOMAIN_SUFFIXES):

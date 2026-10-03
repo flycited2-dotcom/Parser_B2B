@@ -118,7 +118,8 @@ Shell/systemd environment имеет приоритет над dotenv-файла
   (`ENRICH_EMAIL_ONLY=1`); одна компания с одним сайтом посещается один раз
   (цепочки филиалов делят результат); браузер останавливается, как только нашёл
   email. Прежнее поведение — `ENRICH_STATIC=0 ENRICH_EMAIL_ONLY=0 ENRICH_MAX_PATHS=45
-  ENRICH_PARALLEL=1`.
+  ENRICH_PARALLEL=1 ENRICH_CACHE=0`. Пустой `ENRICH_MAX_SITES` теперь означает 400 (раньше —
+  «без лимита»); без лимита — `ENRICH_MAX_SITES=0`.
 - **Память между прогонами** (`output/enrich_cache.json`, по домену): найденное
   применяется к свежим строкам без сети; «ничего не нашли» не перепроверяется
   `ENRICH_RECHECK_DAYS` (14) дней, недоступный сайт — 7; найденное хранится 60.

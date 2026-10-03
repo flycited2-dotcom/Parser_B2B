@@ -154,3 +154,16 @@ def test_outreach_uses_only_clean_emails_and_flags_foreign_domains(tmp_path):
     # почтовый сервис надёжнее чужого корпоративного домена
     assert ready["freevsforeign"]["Email"] == "sever.shop@gmail.com"
     assert "email_foreign_domain" not in ready["freevsforeign"]["Флаги качества"]
+
+
+def test_vk_link_in_website_field_does_not_make_corporate_email_foreign(tmp_path):
+    master = tmp_path / "master_all.csv"
+    _write_master(master, [
+        {"entity_id": "vk", "name": "Окна Юг", "city": "Ялта", "client_type": "stroitelstvo",
+         "email": "info@okna-yug.ru", "all_emails": "info@okna-yug.ru | okna@gmail.com",
+         "website": "https://vk.com/okna_yug", "confidence": "0.95"},
+    ])
+    result = build_outreach_exports(str(master), str(tmp_path), min_confidence=0.7)
+    row = _read(result["ready_csv"])[0]
+    assert "email_foreign_domain" not in row["Флаги качества"]
+    assert row["Email"] == "info@okna-yug.ru"  # без своего сайта выбор идёт по префиксу, а не по «почтовому сервису»

@@ -142,3 +142,32 @@ def test_sanitize_row_emails_keeps_good_primary_first_and_handles_empty():
 def test_mail_providers_that_are_also_platforms_are_not_blocked():
     # yandex.ru есть и в списке площадок, и среди почтовых сервисов: ящик компании там легитимен
     assert sanitize_email("okna.yug@yandex.ru", "okna.ru") == ("okna.yug@yandex.ru", "")
+
+
+@pytest.mark.parametrize(
+    ("raw", "site"),
+    [
+        ("info@firma.com.tr", "firma.com.tr"),
+        ("info@x.com.cy", "x.com.cy"),
+        ("info@shop.se", "shop.se"),
+        ("a@b.bet", "b.bet"),
+        ("info@firma.com.tr", ""),
+    ],
+)
+def test_rot13_never_corrupts_real_addresses_with_uncommon_zones(raw, site):
+    assert sanitize_email(raw, site) == (raw, "")
+
+
+def test_rot13_is_applied_only_when_the_result_matches_the_site_or_zone_is_unmistakable():
+    assert sanitize_email("graqre@gx-xvg.pbz", "tk-kit.com") == ("tender@tk-kit.com", "rot13_decoded")
+    assert sanitize_email("vasb@fvgr.pbz", "") == ("info@site.com", "rot13_decoded")  # .pbz это .com
+    assert sanitize_email("vasb@fvgr.eh", "") == ("vasb@fvgr.eh", "")  # .eh — реальная зона, не трогаем
+
+
+def test_multi_tenant_services_are_not_company_sites():
+    from config.hosts import is_non_company_url
+
+    for url in ("https://dikidi.net/12345", "https://yclients.com/x", "https://sites.google.com/view/okna",
+                "https://2gis.com/org/1", "https://goo.gl/abc", "https://vk.cc/abc", "https://clck.ru/abc"):
+        assert is_non_company_url(url), url
+    assert not is_non_company_url("https://okna-yug.ru")

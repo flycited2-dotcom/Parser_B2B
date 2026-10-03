@@ -19,6 +19,9 @@ PLATFORM_HOSTS = frozenset({
     "booking.com", "tvil.ru", "sutochno.ru", "ostrovok.ru", "tripadvisor.ru",
     "tripadvisor.com", "zoon.ru", "flamp.ru", "yell.ru", "hh.ru",
     "pulscen.ru", "tiu.ru", "satu.kz", "ozon.ru", "wildberries.ru",
+    # сервисы записи, конструкторы визиток, сокращатели: один домен — тысячи компаний
+    "dikidi.net", "dikidi.ru", "yclients.com", "sites.google.com", "2gis.com", "goo.gl", "vk.cc",
+    "clck.ru", "bit.ly", "t.co", "tinyurl.com",
 })
 FREE_MAIL_HOSTS = frozenset({
     "mail.ru", "inbox.ru", "list.ru", "bk.ru", "internet.ru", "ya.ru",

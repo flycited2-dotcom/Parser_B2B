@@ -27,6 +27,7 @@ from config.segments import (
     exclusion_flags,
     segment_title,
 )
+from config.hosts import is_non_company_url
 from utils.cross_base import is_in_other_base
 from utils.csv_safety import neutralize_csv_formula
 from utils.email_quality import email_relation, sanitize_email
@@ -74,7 +75,7 @@ def _flags(row: dict) -> set[str]:
 
 def _website_domain(value: str) -> str:
     raw = str(value or "").strip()
-    if not raw:
+    if not raw or is_non_company_url(raw):
         return ""
     try:
         host = (urlparse(raw if "://" in raw else "https://" + raw).hostname or "")

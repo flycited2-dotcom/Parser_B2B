@@ -22,6 +22,9 @@ from utils.email_quality import sanitize_email
 from utils.safe_http import fetch_public_response
 from utils.web_signals import DEAD_KINDS, attempt_fetch
 
+# Мёртвым для решения «пробовать ли браузер» считаем только устойчивые сбои: DNS, отказ
+# соединения, 404/410. Таймаут, TLS-ошибка и 5xx — «неизвестно»: браузер может загрузить сайт.
+STATIC_DEAD_KINDS = frozenset({"unreachable", "error"})
 MAX_PAGES = 5  # главная + до 4 контактных страниц
 MAX_EMAILS = 8
 GUESSED_PATHS = ("contacts", "kontakty")
@@ -138,7 +141,7 @@ async def fetch_static_contacts(
     if not html:
         result.kind = (
             "blocked" if "blocked" in kinds
-            else "dead" if all(kind in DEAD_KINDS for kind in kinds)
+            else "dead" if all(kind in STATIC_DEAD_KINDS for kind in kinds)
             else "unknown"
         )
         return result
