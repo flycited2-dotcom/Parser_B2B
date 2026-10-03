@@ -754,7 +754,11 @@ async def enrich_from_website(
 
 
 async def _page_alive(page) -> bool:
+    """Страница жива, если её удаётся сбросить на about:blank и выполнить на ней скрипт.
+    Сброс обязателен: после сетевой ошибки страница показывает страницу ошибки, и evaluate
+    на ней падает, хотя браузер исправен."""
     try:
+        await asyncio.wait_for(page.goto("about:blank"), 5)
         await asyncio.wait_for(page.evaluate("1"), 5)
         return True
     except Exception:

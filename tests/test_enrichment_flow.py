@@ -32,9 +32,16 @@ class FakePage:
     def __init__(self, state, number):
         self.state, self.number = state, number
 
+    async def goto(self, url, **kwargs):
+        if self.number in self.state.dead_pages:
+            raise RuntimeError("Target crashed")
+        self.state.resets += 1
+
     async def evaluate(self, script):
         if self.number in self.state.dead_pages:
             raise RuntimeError("Target crashed")
+        if self.state.error_page_evaluate_fails and not self.state.resets:
+            raise RuntimeError("Execution context was destroyed")  # страница ошибки сети до сброса
         return 1
 
     async def close(self):
@@ -76,7 +83,7 @@ def harness(monkeypatch, tmp_path):
     state = SimpleNamespace(
         browser_calls=[], static_calls=[], launches=0, vk={},
         browser_results={}, static_results={}, active=0, peak=0, delay=0,
-        pages=0, fail_new_page_at=0, browser_closed=False, enrich_errors={}, dead_pages=set(),
+        pages=0, fail_new_page_at=0, browser_closed=False, enrich_errors={}, dead_pages=set(), resets=0, error_page_evaluate_fails=False,
     )
     monkeypatch.setattr(email_finder, "OUTPUT_FILE", str(tmp_path / "out.csv"))
     monkeypatch.setattr(email_finder, "async_playwright", lambda: FakePlaywright())
@@ -456,3 +463,15 @@ def test_empty_result_from_a_dead_page_is_not_cached(harness, tmp_path, monkeypa
     assert "a.ru" not in cache  # страница упала — это сбой браузера, а не мёртвый сайт
     assert cache["b.ru"]["status"] == "dead"  # живая страница вернула пустоту: перепроверка через неделю
     assert harness.pages == 2
+
+
+def test_network_error_page_is_not_mistaken_for_a_crashed_page(harness, tmp_path, monkeypatch):
+    import json
+
+    monkeypatch.setenv("ENRICH_STATIC", "0")
+    monkeypatch.setenv("ENRICH_PARALLEL", "1")
+    harness.error_page_evaluate_fails = True  # evaluate на странице ошибки падает, пока страницу не сбросили
+    harness.run([row("A", "https://a.ru")])
+    cache = json.loads((tmp_path / CACHE_PATH).read_text(encoding="utf-8"))
+    assert cache["a.ru"]["status"] == "dead"  # честно «не загрузился», а не сбой браузера
+    assert harness.pages == 1  # страницу пересоздавать не пришлось
