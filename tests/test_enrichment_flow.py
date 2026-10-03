@@ -32,18 +32,6 @@ class FakePage:
     def __init__(self, state, number):
         self.state, self.number = state, number
 
-    async def goto(self, url, **kwargs):
-        if self.number in self.state.dead_pages:
-            raise RuntimeError("Target crashed")
-        self.state.resets += 1
-
-    async def evaluate(self, script):
-        if self.number in self.state.dead_pages:
-            raise RuntimeError("Target crashed")
-        if self.state.error_page_evaluate_fails and not self.state.resets:
-            raise RuntimeError("Execution context was destroyed")  # страница ошибки сети до сброса
-        return 1
-
     async def close(self):
         return None
 
@@ -83,7 +71,7 @@ def harness(monkeypatch, tmp_path):
     state = SimpleNamespace(
         browser_calls=[], static_calls=[], launches=0, vk={},
         browser_results={}, static_results={}, active=0, peak=0, delay=0,
-        pages=0, fail_new_page_at=0, browser_closed=False, enrich_errors={}, dead_pages=set(), resets=0, error_page_evaluate_fails=False,
+        pages=0, fail_new_page_at=0, browser_closed=False, enrich_errors={}, dead_pages=set(),
     )
     monkeypatch.setattr(email_finder, "OUTPUT_FILE", str(tmp_path / "out.csv"))
     monkeypatch.setattr(email_finder, "async_playwright", lambda: FakePlaywright())
@@ -97,6 +85,8 @@ def harness(monkeypatch, tmp_path):
         state.browser_calls.append({"website": website, **kwargs})
         if website in state.enrich_errors:
             raise state.enrich_errors[website]
+        if getattr(page, "number", None) in state.dead_pages:
+            return EMPTY_BROWSER  # упавшая страница ничего не загружает
         state.active += 1
         state.peak = max(state.peak, state.active)
         if state.delay:
@@ -421,7 +411,7 @@ def test_crashed_page_is_recreated_and_the_failure_is_not_cached_or_charged(harn
     out = harness.run([row("A", "https://a.ru"), row("B", "https://b.ru"), row("C", "https://c.ru")])
     assert out["B"]["email"] == "info@b.ru"
     assert [call["website"] for call in harness.browser_calls] == ["https://a.ru", "https://b.ru", "https://c.ru"]
-    assert harness.pages == 2  # страница после сбоя создана заново
+    assert harness.pages == 3  # заново: после исключения на a и после пустого результата на c
     cache = json.loads((tmp_path / CACHE_PATH).read_text(encoding="utf-8"))
     assert "a.ru" not in cache  # сбой браузера не клеймит сайт как «dead»
 
@@ -452,26 +442,15 @@ def test_corrupt_contacts_field_in_cache_does_not_stop_enrichment(harness, tmp_p
     assert out["A"]["email"] == "info@a.ru"
 
 
-def test_empty_result_from_a_dead_page_is_not_cached(harness, tmp_path, monkeypatch):
+def test_page_is_recreated_after_an_empty_result_so_a_crashed_page_costs_one_site(harness, tmp_path, monkeypatch):
     import json
 
     monkeypatch.setenv("ENRICH_STATIC", "0")
     monkeypatch.setenv("ENRICH_PARALLEL", "1")
-    harness.dead_pages = {1}
-    harness.run([row("A", "https://a.ru"), row("B", "https://b.ru")])
+    harness.dead_pages = {1}  # первая страница «упала»: отдаёт пустоту
+    harness.browser_results = {"https://b.ru": ("info@b.ru", "", "", "", "info@b.ru", "", "")}
+    out = harness.run([row("A", "https://a.ru"), row("B", "https://b.ru")])
     cache = json.loads((tmp_path / CACHE_PATH).read_text(encoding="utf-8"))
-    assert "a.ru" not in cache  # страница упала — это сбой браузера, а не мёртвый сайт
-    assert cache["b.ru"]["status"] == "dead"  # живая страница вернула пустоту: перепроверка через неделю
+    assert cache["a.ru"]["status"] == "dead"  # пустой ответ: перепроверка через неделю
+    assert out["B"]["email"] == "info@b.ru"  # страница пересоздана, следующий сайт обработан нормально
     assert harness.pages == 2
-
-
-def test_network_error_page_is_not_mistaken_for_a_crashed_page(harness, tmp_path, monkeypatch):
-    import json
-
-    monkeypatch.setenv("ENRICH_STATIC", "0")
-    monkeypatch.setenv("ENRICH_PARALLEL", "1")
-    harness.error_page_evaluate_fails = True  # evaluate на странице ошибки падает, пока страницу не сбросили
-    harness.run([row("A", "https://a.ru")])
-    cache = json.loads((tmp_path / CACHE_PATH).read_text(encoding="utf-8"))
-    assert cache["a.ru"]["status"] == "dead"  # честно «не загрузился», а не сбой браузера
-    assert harness.pages == 1  # страницу пересоздавать не пришлось

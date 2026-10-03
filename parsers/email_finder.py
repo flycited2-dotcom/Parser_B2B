@@ -753,18 +753,6 @@ async def enrich_from_website(
     return result()
 
 
-async def _page_alive(page) -> bool:
-    """Страница жива, если её удаётся сбросить на about:blank и выполнить на ней скрипт.
-    Сброс обязателен: после сетевой ошибки страница показывает страницу ошибки, и evaluate
-    на ней падает, хотя браузер исправен."""
-    try:
-        await asyncio.wait_for(page.goto("about:blank"), 5)
-        await asyncio.wait_for(page.evaluate("1"), 5)
-        return True
-    except Exception:
-        return False
-
-
 def _contacts_from_result(result: tuple[str, ...], host: str) -> dict:
     """Контакты для памяти — только то, что нашёл сам визит (очищенное шлюзом), без полей строки."""
     email, phone, address, social, all_emails, all_phones, all_socials = result
@@ -799,7 +787,8 @@ async def _browser_phase(rows: list[dict], indices: list[int], settings: EnrichS
                     print(f"[email_finder] память прогонов не сохранена: {e}")
 
     async def visit(page, members: list[int]) -> str:
-        """'visited' | 'skipped' (нет сайта) | 'failed' (сбой браузера: не кэшируется и не тратит бюджет)."""
+        """'visited' | 'empty' (браузер ничего не вернул) | 'skipped' (нет сайта) |
+        'failed' (исключение: не кэшируется и не тратит бюджет)."""
         first = rows[members[0]]
         if settings.site_finder and not (first.get("website") or "").strip():
             found = await asyncio.to_thread(find_website, first.get("name", ""), first.get("city", ""))
@@ -818,9 +807,6 @@ async def _browser_phase(rows: list[dict], indices: list[int], settings: EnrichS
         except Exception as e:
             print(f"    ошибка: {e}")
             return "failed"
-        if not any(result) and not await _page_alive(page):
-            print("    страница браузера недоступна — пересоздаём")
-            return "failed"
         for idx in members:
             row = rows[idx]
             needs = _row_needs(row)
@@ -836,7 +822,7 @@ async def _browser_phase(rows: list[dict], indices: list[int], settings: EnrichS
             else:
                 # совсем пустой ответ живой страницы — сайт, скорее всего, не загрузился: через неделю
                 cache.record(host, status="dead", via="browser")
-        return "visited"
+        return "visited" if any(result) else "empty"
 
     async with async_playwright() as p:
         browser, context = await create_browser_context(p, headless=True)
@@ -854,14 +840,17 @@ async def _browser_phase(rows: list[dict], indices: list[int], settings: EnrichS
                     return
                 state["visited"] += 1  # место в бюджете занимаем до первого await
                 outcome = await visit(page, members)
-                if outcome != "visited":
-                    state["visited"] -= 1
-                    if outcome == "failed":
-                        try:
-                            await page.close()
-                        except Exception:
-                            pass
-                        page = await context.new_page()
+                if outcome in ("skipped", "failed"):
+                    state["visited"] -= 1  # место в бюджете возвращаем
+                if outcome in ("failed", "empty"):
+                    # Пустой результат или исключение: страница могла упасть или зависнуть на
+                    # прошлой навигации. Пересоздать дёшево, а проверять живость ненадёжно.
+                    try:
+                        await page.close()
+                    except Exception:
+                        pass
+                    page = await context.new_page()
+                if outcome in ("skipped", "failed"):
                     continue
                 checkpoint()
                 await asyncio.sleep(random.uniform(1.2, 2.5))
