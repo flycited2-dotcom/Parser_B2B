@@ -309,3 +309,37 @@ def test_cache_can_be_disabled(harness, tmp_path, monkeypatch):
     harness.static_results = {"a.ru": static_ok("https://a.ru", ["info@a.ru"])}
     harness.run([row("Ra", "https://a.ru")])
     assert not (tmp_path / CACHE_PATH).exists()
+
+
+# --- соцсети и площадки в поле «сайт» ----------------------------------------------
+
+def test_social_and_platform_websites_are_never_scraped_or_shared(harness):
+    harness.browser_results = {"https://instagram.com/a": ("owner@gmail.com", "", "", "", "owner@gmail.com", "", "")}
+    out = harness.run([
+        row("A", "https://instagram.com/a"),
+        row("B", "https://instagram.com/b"),
+        row("C", "https://vk.com/c"),
+        row("D", "https://booking.com/hotel/d"),
+        row("E", "https://wa.me/79780000000"),
+    ])
+    assert harness.static_calls == [] and harness.browser_calls == []
+    assert all(item["email"] == "" for item in out.values())
+
+
+def test_company_sites_are_still_processed_next_to_social_links(harness):
+    harness.static_results = {"okna.ru": static_ok("https://okna.ru", ["info@okna.ru"])}
+    out = harness.run([row("A", "https://vk.com/okna"), row("B", "https://okna.ru")])
+    assert harness.static_calls == [["https://okna.ru"]]
+    assert out["B"]["email"] == "info@okna.ru" and out["A"]["email"] == ""
+
+
+def test_vk_fallback_covers_rows_whose_site_is_a_social_link_or_dead(harness):
+    harness.static_results = {"gone.ru": static_ok("https://gone.ru", kind="dead")}
+    harness.vk = {"https://vk.com/a": "shop-a@mail.ru", "https://vk.com/b": "shop-b@mail.ru"}
+    out = harness.run([
+        row("A", "https://instagram.com/a", social="https://vk.com/a"),
+        row("B", "https://gone.ru", social="https://vk.com/b"),
+    ])
+    assert out["A"]["email"] == "shop-a@mail.ru"
+    assert out["B"]["email"] == "shop-b@mail.ru"
+    assert harness.browser_calls == []

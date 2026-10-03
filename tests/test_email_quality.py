@@ -65,6 +65,10 @@ def test_legitimate_addresses_are_kept_unchanged(raw, site):
         ("info@dikidi.net", "dikidi.ru", "platform_or_authority"),
         ("info@reg82.roszdravnadzor.ru", "doctor-dent.su", "platform_or_authority"),
         ("info@minzdrav.gov.ru", "", "platform_or_authority"),
+        ("support@instagram.com", "", "platform_or_authority"),
+        ("help@facebook.com", "okna.ru", "platform_or_authority"),
+        ("support@booking.com", "hotel.ru", "platform_or_authority"),
+        ("info@2gis.ru", "", "platform_or_authority"),
         ("greenefamilycamp@theurj.onmicrosoft.com", "greene.org", "platform_or_authority"),
         ("sevzdrav@sev.gov.ru", "", "platform_or_authority"),
         ("crimea@82.rospotrebnadzor.ru", "", "platform_or_authority"),
@@ -133,3 +137,8 @@ def test_sanitize_row_emails_keeps_good_primary_first_and_handles_empty():
     assert sanitize_row_emails("a@okna.ru", "b@okna.ru", "okna.ru") == ("a@okna.ru", "a@okna.ru | b@okna.ru")
     assert sanitize_row_emails("", "", "okna.ru") == ("", "")
     assert sanitize_row_emails("junk", "", "") == ("", "")
+
+
+def test_mail_providers_that_are_also_platforms_are_not_blocked():
+    # yandex.ru есть и в списке площадок, и среди почтовых сервисов: ящик компании там легитимен
+    assert sanitize_email("okna.yug@yandex.ru", "okna.ru") == ("okna.yug@yandex.ru", "")

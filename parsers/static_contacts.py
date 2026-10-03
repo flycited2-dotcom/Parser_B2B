@@ -16,7 +16,7 @@ import re
 from dataclasses import dataclass, field
 from urllib.parse import unquote, urljoin, urlparse
 
-from config.hosts import host_of
+from config.hosts import host_of, is_non_company_url
 from parsers.email_finder import _decode_obfuscated_email, _email_score, pick_emails, pick_phones
 from utils.email_quality import sanitize_email
 from utils.safe_http import fetch_public_response
@@ -168,7 +168,9 @@ async def static_prepass(websites, *, parallel: int = 16, fetch=fetch_public_res
     unique: dict[str, str] = {}
     for website in websites:
         host = host_of(website)
-        if host and host not in unique:
+        # Соцсеть/площадка в поле «сайт» — не сайт компании: у разных компаний общий домен,
+        # результат одной страницы нельзя раздавать остальным.
+        if host and host not in unique and not is_non_company_url(website):
             unique[host] = website
     semaphore = asyncio.Semaphore(max(1, parallel))
     results: dict[str, StaticResult] = {}

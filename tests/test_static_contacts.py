@@ -141,3 +141,16 @@ def test_prepass_dedupes_hosts_and_bounds_parallelism():
     assert sorted(results) == [f"s{i}.ru" for i in range(5)]
     assert results["s3.ru"].emails == ["info@s3.ru"]
     assert peak <= 2
+
+
+def test_prepass_ignores_social_and_platform_urls():
+    calls = []
+
+    async def fetch(url, **kwargs):
+        calls.append(url)
+        return 200, "<p>info@site.ru</p>"
+
+    sites = ["https://instagram.com/a", "https://vk.com/b", "https://booking.com/h/c", "https://site.ru/"]
+    results = run(sc.static_prepass(sites, fetch=fetch))
+    assert sorted(results) == ["site.ru"]
+    assert calls == ["https://site.ru/"]

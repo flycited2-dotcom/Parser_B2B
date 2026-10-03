@@ -23,7 +23,7 @@ from urllib.parse import urljoin, urlparse
 
 from playwright.async_api import async_playwright
 
-from config.hosts import host_of
+from config.hosts import host_of, is_non_company_url
 from parsers.enrich_cache import CONTACT_KEYS, EnrichCache
 from parsers.site_finder import find_website
 from parsers.vk_email import extract_email_from_vk_async
@@ -204,9 +204,12 @@ def _wants_enrichment(row: dict, settings: EnrichSettings) -> bool:
 
 def _visit_order(rows: list[dict], settings: EnrichSettings) -> list[int]:
     """Индексы строк к обработке: сначала без email, затем остальные; без сайта — в конце."""
+    # Соцсеть/площадка в поле «сайт» не обходим: это не сайт компании, а общий домен многих
+    # компаний (группировка по домену раздала бы результат одной страницы всем).
     with_site = [
         i for i, row in enumerate(rows)
-        if (row.get("website") or "").strip() and _wants_enrichment(row, settings)
+        if (row.get("website") or "").strip() and not is_non_company_url(row["website"])
+        and _wants_enrichment(row, settings)
     ]
     without_site = [
         i for i, row in enumerate(rows)
@@ -798,16 +801,6 @@ async def _browser_phase(rows: list[dict], indices: list[int], settings: EnrichS
             if not (needs["email"] if settings.email_only else any(needs.values())):
                 continue
             _apply_browser_result(row, result, needs)
-            # VK fallback: email не найден, а в записи есть страница VK
-            if not row.get("email") and "vk.com" in (row.get("social") or ""):
-                try:
-                    vk_email = await extract_email_from_vk_async(row["social"])
-                    vk_email, _all = sanitize_row_emails(vk_email, "", host)
-                    if vk_email:
-                        row["email"] = vk_email
-                        print(f"[vk_email] {row.get('name')} → {vk_email}")
-                except Exception:
-                    pass
         if cache is not None and host:
             with_email = next((rows[idx] for idx in members if rows[idx].get("email")), None)
             if with_email is not None:
@@ -843,6 +836,31 @@ async def _browser_phase(rows: list[dict], indices: list[int], settings: EnrichS
         await asyncio.gather(*(worker() for _ in range(max(1, min(settings.parallel, len(groups))))))
         await browser.close()
     return state["visited"]
+
+
+async def _vk_fallback_pass(rows: list[dict]) -> int:
+    """Email со страницы VK для строк, где его так и не нашли. Не зависит ни от сайта,
+    ни от браузера: работает и для строк с мёртвым сайтом или соцсетью вместо сайта."""
+    targets = [row for row in rows if not row.get("email") and "vk.com" in (row.get("social") or "")]
+    semaphore = asyncio.Semaphore(4)
+    found = 0
+
+    async def one(row: dict) -> None:
+        nonlocal found
+        async with semaphore:
+            try:
+                vk_email = await extract_email_from_vk_async(row["social"])
+            except Exception:
+                return
+        vk_email, _all = sanitize_row_emails(vk_email, "", host_of(row.get("website", "")))
+        if vk_email and not row.get("email"):
+            row["email"] = vk_email
+            row["all_emails"] = _merge_flat_contacts(row.get("all_emails", ""), vk_email)
+            found += 1
+            print(f"[vk_email] {row.get('name')} → {vk_email}")
+
+    await asyncio.gather(*(one(row) for row in targets))
+    return found
 
 
 async def run_enrichment(input_csv: str):
@@ -959,6 +977,7 @@ async def run_enrichment(input_csv: str):
         print(f"[browser] к обходу браузером: {len(browser_order)}")
         if browser_order:
             await _browser_phase(rows, browser_order, settings, _flush_csv, cache)
+        await _vk_fallback_pass(rows)
     finally:
         # Гарантированный финальный flush — даже если поймали Exception или TERM.
         try:

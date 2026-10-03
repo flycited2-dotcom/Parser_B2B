@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 from urllib.parse import unquote
 
-from config.hosts import FREE_MAIL_HOSTS
+from config.hosts import FREE_MAIL_HOSTS, PLATFORM_HOSTS, SOCIAL_HOSTS
 
 # Распространённые зоны: по ним решаем, декодировать ли адрес как ROT13.
 COMMON_TLDS = frozenset(
@@ -47,7 +47,9 @@ BLOCK_DOMAIN_SUFFIXES = (
     "wixpress.com", "sferum.ru", "vk.com", "vk.ru", "vk-portal.net", "roszdravnadzor.ru",
     "rospotrebnadzor.ru", "roskomnadzor.ru", "gov.ru", "gosuslugi.ru", "sentry.io",
     "onmicrosoft.com",
-)
+) + tuple(sorted((SOCIAL_HOSTS | PLATFORM_HOSTS) - FREE_MAIL_HOSTS))
+# yandex.ru есть и среди площадок, и среди почтовых сервисов: ящик компании там легитимен,
+# поэтому почтовые сервисы из блок-листа вычтены.
 SPAM_DOMAIN_RE = re.compile(
     r"casino|kazino|1xbet|poker|slots?(?:[-.]|$)|porn|xxx|vulkan|888|(?:^|[-.])bet(?:[-.]|$)", re.I
 )
