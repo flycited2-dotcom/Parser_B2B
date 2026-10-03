@@ -171,3 +171,21 @@ def test_multi_tenant_services_are_not_company_sites():
                 "https://2gis.com/org/1", "https://goo.gl/abc", "https://vk.cc/abc", "https://clck.ru/abc"):
         assert is_non_company_url(url), url
     assert not is_non_company_url("https://okna-yug.ru")
+
+
+@pytest.mark.parametrize(
+    ("raw", "site", "reason"),
+    [
+        ("passwd_lc@corp.mail.ru", "exist.ru", "provider_subdomain"),  # внутренний адрес Mail.ru Group
+        ("login@mail.yandex.ru", "", "provider_subdomain"),
+        ("4u@jabber.ru", "web-moneta.com", "platform_or_authority"),  # идентификатор XMPP, не почта
+        ("someone@jabber.org", "", "platform_or_authority"),
+    ],
+)
+def test_provider_internal_and_messenger_addresses_are_dropped(raw, site, reason):
+    assert sanitize_email(raw, site) == (None, reason)
+
+
+def test_company_domains_that_merely_contain_a_provider_name_are_kept():
+    assert sanitize_email("info@gmail-shop.ru", "gmail-shop.ru")[0] == "info@gmail-shop.ru"
+    assert sanitize_email("info@mailservice.ru", "")[0] == "info@mailservice.ru"

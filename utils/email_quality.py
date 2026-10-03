@@ -46,7 +46,7 @@ BLOCK_DOMAIN_SUFFIXES = (
     "sprinthost.ru", "dikidi.net", "dikidi.ru", "yclients.com", "tilda.cc", "tilda.ws", "wix.com",
     "wixpress.com", "sferum.ru", "vk.com", "vk.ru", "vk-portal.net", "roszdravnadzor.ru",
     "rospotrebnadzor.ru", "roskomnadzor.ru", "gov.ru", "gosuslugi.ru", "sentry.io",
-    "onmicrosoft.com",
+    "onmicrosoft.com", "jabber.ru", "jabber.org", "xmpp.ru", "xmpp.jp",
 ) + tuple(sorted((SOCIAL_HOSTS | PLATFORM_HOSTS) - FREE_MAIL_HOSTS))
 # yandex.ru есть и среди площадок, и среди почтовых сервисов: ящик компании там легитимен,
 # поэтому почтовые сервисы из блок-листа вычтены.
@@ -200,6 +200,9 @@ def sanitize_email(raw: object, site_host: str = "") -> tuple[str | None, str]:
     related = is_related(domain, site_host)
     if not related and SPAM_DOMAIN_RE.search(domain):
         return None, "spam_domain"
+    if any(domain.endswith("." + provider) for provider in FREE_MAIL_HOSTS):
+        # corp.mail.ru, mail.yandex.ru…: служебные адреса самого почтового сервиса, не компании
+        return None, "provider_subdomain"
     if domain in FREE_MAIL_HOSTS:
         if local in GENERIC_AT_PROVIDER:
             return None, "provider_service_address"
