@@ -125,3 +125,45 @@ def test_exclusions_are_recomputed_so_list_updates_apply_to_stored_rows(tmp_path
     assert result["ready_rows"] == 0
     reasons = {row["entity_id"]: row["review_reason"] for row in _read(result["review_csv"])}
     assert reasons == {"chain-unflagged": "excluded_chain", "gov-in-provenance": "excluded_gov"}
+
+
+def test_outreach_uses_only_clean_emails_and_flags_foreign_domains(tmp_path):
+    master = tmp_path / "master_all.csv"
+    _write_master(master, [
+        {"entity_id": "junk", "name": "Окна Юг", "city": "Ялта", "client_type": "stroitelstvo",
+         "email": "rating@mail.ru", "all_emails": "rating@mail.ru | %20info@okna-yug.ru",
+         "website": "https://okna-yug.ru", "confidence": "0.95"},
+        {"entity_id": "onlyjunk", "name": "Студия Код", "city": "Ялта", "client_type": "reklama",
+         "email": "support@beget.com", "website": "https://studio-kod.ru", "confidence": "0.95"},
+        {"entity_id": "foreign", "name": "Ломбард Капитал", "city": "Ялта", "client_type": "finansy",
+         "email": "lombard@grouplk.ru", "website": "https://capitallombard.ru", "confidence": "0.95"},
+        {"entity_id": "freevsforeign", "name": "Магазин Север", "city": "Ялта", "client_type": "torgovlya",
+         "email": "zzz@partner-corp.ru", "all_emails": "zzz@partner-corp.ru | sever.shop@gmail.com",
+         "website": "https://sever-shop.ru", "confidence": "0.95"},
+    ])
+
+    result = build_outreach_exports(str(master), str(tmp_path), min_confidence=0.7)
+
+    ready = {row["ID объекта"]: row for row in _read(result["ready_csv"])}
+    assert ready["junk"]["Email"] == "info@okna-yug.ru"
+    assert ready["junk"]["Все email"] == "info@okna-yug.ru"
+    assert "onlyjunk" not in ready
+    reasons = {row["entity_id"]: row["review_reason"] for row in _read(result["review_csv"])}
+    assert reasons["onlyjunk"] == "missing_or_invalid_email"
+    assert "email_foreign_domain" in ready["foreign"]["Флаги качества"]
+    # почтовый сервис надёжнее чужого корпоративного домена
+    assert ready["freevsforeign"]["Email"] == "sever.shop@gmail.com"
+    assert "email_foreign_domain" not in ready["freevsforeign"]["Флаги качества"]
+
+
+def test_vk_link_in_website_field_does_not_make_corporate_email_foreign(tmp_path):
+    master = tmp_path / "master_all.csv"
+    _write_master(master, [
+        {"entity_id": "vk", "name": "Окна Юг", "city": "Ялта", "client_type": "stroitelstvo",
+         "email": "info@okna-yug.ru", "all_emails": "info@okna-yug.ru | okna@gmail.com",
+         "website": "https://vk.com/okna_yug", "confidence": "0.95"},
+    ])
+    result = build_outreach_exports(str(master), str(tmp_path), min_confidence=0.7)
+    row = _read(result["ready_csv"])[0]
+    assert "email_foreign_domain" not in row["Флаги качества"]
+    assert row["Email"] == "info@okna-yug.ru"  # без своего сайта выбор идёт по префиксу, а не по «почтовому сервису»

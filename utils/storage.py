@@ -4,6 +4,7 @@ import os
 import re
 from datetime import datetime
 
+from config.hosts import host_of
 from config.segments import exclusion_flags
 from utils.categories import normalize as normalize_category
 from utils import dedup, progress
@@ -16,6 +17,7 @@ from utils.entity_resolution import (
     observation_identity,
     provenance_for_rows,
 )
+from utils.email_quality import sanitize_row_emails
 from utils.quality import is_master_anchor
 
 FIELDS = [
@@ -118,6 +120,9 @@ def _prepare_item(item: dict) -> dict:
     cleaned = {field: _clean(raw.get(field, "")) for field in FIELDS}
     if cleaned.get("phone"):
         cleaned["phone"] = normalize_phone(cleaned["phone"])
+    cleaned["email"], cleaned["all_emails"] = sanitize_row_emails(
+        cleaned.get("email", ""), cleaned.get("all_emails", ""), host_of(cleaned.get("website", ""))
+    )
     if not cleaned.get("client_type"):
         cleaned["client_type"] = normalize_category(cleaned.get("category", ""))
     extra_flags = exclusion_flags(

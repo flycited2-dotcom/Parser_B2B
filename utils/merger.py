@@ -7,7 +7,9 @@ import os
 import shutil
 from collections import OrderedDict
 
+from config.hosts import host_of
 from utils.csv_safety import neutralize_csv_formula
+from utils.email_quality import sanitize_row_emails
 from utils.entity_resolution import (
     CONTACT_FIELDS,
     MULTI_CONTACT_FIELDS,
@@ -205,6 +207,9 @@ def _normalize_row(row: dict) -> dict:
         field: _restore_csv_text(row.get(field))
         for field in FIELDNAMES
     }
+    normalized["email"], normalized["all_emails"] = sanitize_row_emails(
+        normalized.get("email", ""), normalized.get("all_emails", ""), host_of(normalized.get("website", ""))
+    )
     normalized["observation_id"] = observation_identity(normalized)
     normalized["sources"] = normalized.get("sources") or normalized.get("source", "")
     fallback_seen = normalized.get("parsed_at", "")

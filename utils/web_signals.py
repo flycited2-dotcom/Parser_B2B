@@ -12,6 +12,7 @@ import csv
 import json
 import os
 import re
+import ssl
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -25,7 +26,7 @@ from utils.safe_http import fetch_public_response
 # 401/403/429 — бот-защита (DDoS-Guard, Qrator, Cloudflare), а не мёртвый сайт.
 BLOCKED_STATUSES = frozenset({401, 403, 429})
 MISSING_STATUSES = frozenset({404, 410})
-DEAD_KINDS = frozenset({"unreachable", "error"})
+DEAD_KINDS = frozenset({"unreachable", "error", "unstable"})
 RECHECK_DAYS = 7
 # Если почти вся пачка «мертва», вероятнее сбой нашей сети — не сохраняем.
 OUTAGE_MIN_BATCH = 10
@@ -111,7 +112,7 @@ def detect_html_signals(html: str, *, booking_relevant: bool, now_year: int) -> 
     return signals
 
 
-async def _attempt(fetch: Fetcher, url: str) -> tuple[str, str]:
+async def attempt_fetch(fetch: Fetcher, url: str) -> tuple[str, str]:
     """(kind, html): ok | blocked | error | unreachable | unknown."""
     try:
         status, html = await fetch(
@@ -121,15 +122,23 @@ async def _attempt(fetch: Fetcher, url: str) -> tuple[str, str]:
             headers={"User-Agent": UA},
             allowed_content_types=("text/html",),
         )
-    except OSError:  # DNS/TCP/TLS failures and timeouts
-        return "unreachable", ""
+    except OSError as exc:
+        # таймаут и TLS-ошибка — неустойчивый сбой (Chromium такой сайт может загрузить);
+        # отказ соединения — устойчивый
+        text = str(exc).lower()
+        transient = isinstance(exc, (TimeoutError, ssl.SSLError)) or any(
+            word in text for word in ("ssl", "certificate", "timed out")
+        )
+        return ("unstable", "") if transient else ("unreachable", "")
     except UnsafeURLError as exc:
         return ("unreachable", "") if "DNS resolution failed" in str(exc) else ("unknown", "")
     except Exception:
         return "unknown", ""
     if status in BLOCKED_STATUSES:
         return "blocked", ""
-    if status in MISSING_STATUSES or status >= 500:
+    if status >= 500:
+        return "unstable", ""
+    if status in MISSING_STATUSES:
         return "error", ""
     if html:
         return "ok", html
@@ -151,13 +160,13 @@ async def probe_site(
     checked_at = now.isoformat(timespec="seconds")
     host = website_host(website)
     signals: list[str] = []
-    kind, html = await _attempt(fetch, f"https://{host}/")
+    kind, html = await attempt_fetch(fetch, f"https://{host}/")
     if kind == "blocked":
         # A bot wall says nothing about the site itself: no claim.
         return _result([], "blocked", checked_at)
     if kind != "ok":
         https_failed = kind in DEAD_KINDS
-        http_kind, html = await _attempt(fetch, f"http://{host}/")
+        http_kind, html = await attempt_fetch(fetch, f"http://{host}/")
         if http_kind == "ok":
             if https_failed:
                 signals.append("no_https")

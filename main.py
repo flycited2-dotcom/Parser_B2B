@@ -24,6 +24,12 @@ if sys.platform == "win32":
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8")
 
+# Вывод в файл/пайп по умолчанию блочный: лог долгого этапа (Overpass, enrichment) молчал бы
+# минутами, и было бы не понять, что процесс работает.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(line_buffering=True)
+
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 from utils.env_loader import load_all_env
