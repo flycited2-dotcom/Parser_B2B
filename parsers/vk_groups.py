@@ -116,6 +116,11 @@ def _call(method: str, token: str, **params) -> dict:
     return resp
 
 
+def _describe_error(error: dict) -> str:
+    code = error.get("error_code", "?")
+    return f"code={code}: {str(error.get('error_msg') or '?')[:120]}"
+
+
 def _group_relevance(group: dict, matched_queries: list[str]) -> tuple[float, list[str]]:
     """Score broad VK candidates; master later quarantines weak standalone rows."""
     name = str(group.get("name") or "")
@@ -290,14 +295,23 @@ async def run(context):
     city_items = list(VK_CITIES.items())[:max_cities or None]
     queries = QUERIES[:max_queries or None]
     found: dict[int, dict] = {}  # group_id -> city + matched queries
+    search_calls = search_errors = 0
+    last_search_error = ""
+    logged_errors: set[str] = set()
     for city_id, city_name in city_items:
         for q in queries:
             r = _call("groups.search", token, q=q, city_id=city_id,
                       count=200, sort=0)
             time.sleep(RPS_PAUSE)
+            search_calls += 1
             if "error" in r:
-                msg = r["error"].get("error_msg", "?")
-                if "Too many" in msg:
+                search_errors += 1
+                last_search_error = _describe_error(r["error"])
+                if last_search_error not in logged_errors:
+                    logged_errors.add(last_search_error)
+                    print(f"  [VK] groups.search: ошибка {last_search_error} "
+                          f"(город {city_name}, запрос {q!r})")
+                if "Too many" in last_search_error:
                     time.sleep(1.0)
                 continue
             for it in r.get("response", {}).get("items", []):
@@ -314,6 +328,14 @@ async def run(context):
         if max_items and len(found) >= max_items:
             break
 
+    if search_errors:
+        print(f"  [VK] groups.search: ошибок {search_errors} из {search_calls} запросов")
+    if search_calls and search_errors == search_calls:
+        raise RuntimeError(
+            f"VK groups.search: все {search_calls} запросов завершились ошибкой, "
+            f"последняя: {last_search_error}"
+        )
+
     if not found:
         print("  [VK] ничего не найдено")
         return
@@ -322,6 +344,8 @@ async def run(context):
 
     # 2. Детали пачками по 500
     added = 0
+    details_calls = details_errors = 0
+    last_details_error = ""
     gids = list(found.keys())
     for start in range(0, len(gids), 500):
         chunk = gids[start:start + 500]
@@ -329,8 +353,11 @@ async def run(context):
                   group_ids=",".join(map(str, chunk)),
                   fields="contacts,site,description,addresses,activity,city,screen_name")
         time.sleep(RPS_PAUSE)
+        details_calls += 1
         if "error" in r:
-            print(f"  [VK] getById err: {r['error'].get('error_msg', '?')[:80]}")
+            details_errors += 1
+            last_details_error = _describe_error(r["error"])
+            print(f"  [VK] groups.getById: ошибка {last_details_error}")
             time.sleep(1.0)
             continue
         resp = r.get("response")
@@ -382,6 +409,12 @@ async def run(context):
                 "parsed_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
             }):
                 added += 1
+
+    if details_calls and details_errors == details_calls:
+        raise RuntimeError(
+            f"VK groups.getById: все {details_calls} запросов завершились ошибкой, "
+            f"последняя: {last_details_error}"
+        )
 
     print(f"\n[VK] добавлено: {added}")
     return added
