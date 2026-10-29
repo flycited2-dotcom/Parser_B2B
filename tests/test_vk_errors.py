@@ -56,3 +56,30 @@ def test_all_details_requests_failing_raises(vk_env, monkeypatch):
 
     assert "code=6" in str(exc.value)
     assert "groups.getById" in str(exc.value)
+
+
+def test_flood_control_stops_the_matrix_early(vk_env, monkeypatch):
+    monkeypatch.setenv("MAX_QUERIES_PER_SOURCE", "0")
+    calls = []
+
+    def search(params):
+        calls.append(params["q"])
+        return FLOOD
+
+    _fake_api(monkeypatch, search, lambda p: {"response": []})
+
+    with pytest.raises(RuntimeError) as exc:
+        asyncio.run(vk_groups.run(None))
+
+    assert len(calls) == vk_groups.MAX_CONSECUTIVE_FLOOD
+    assert "Flood control" in str(exc.value)
+    assert "ограничил токен" in str(exc.value)
+
+
+def test_flood_counter_resets_after_a_successful_search(vk_env, monkeypatch):
+    monkeypatch.setenv("MAX_QUERIES_PER_SOURCE", "5")
+    ok = {"response": {"items": []}}
+    answers = iter([FLOOD, FLOOD, ok, FLOOD, FLOOD])
+    _fake_api(monkeypatch, lambda p: next(answers), lambda p: {"response": []})
+
+    asyncio.run(vk_groups.run(None))

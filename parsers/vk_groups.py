@@ -32,6 +32,10 @@ from utils.geo_city import normalize_city_name
 API = "https://api.vk.com/method"
 V = "5.131"
 RPS_PAUSE = 0.34  # VK лимит ~3 запроса/сек
+# code=9 «Flood control»: VK ограничил токен. Продолжать матрицу (~1000 запросов)
+# бессмысленно и может продлить ограничение — останавливаем источник.
+FLOOD_CONTROL_CODE = 9
+MAX_CONSECUTIVE_FLOOD = 3
 
 # Проверенные city_id (database.getCities, country_id=1)
 VK_CITIES = {
@@ -295,7 +299,7 @@ async def run(context):
     city_items = list(VK_CITIES.items())[:max_cities or None]
     queries = QUERIES[:max_queries or None]
     found: dict[int, dict] = {}  # group_id -> city + matched queries
-    search_calls = search_errors = 0
+    search_calls = search_errors = consecutive_flood = 0
     last_search_error = ""
     logged_errors: set[str] = set()
     for city_id, city_name in city_items:
@@ -311,9 +315,21 @@ async def run(context):
                     logged_errors.add(last_search_error)
                     print(f"  [VK] groups.search: ошибка {last_search_error} "
                           f"(город {city_name}, запрос {q!r})")
+                if r["error"].get("error_code") == FLOOD_CONTROL_CODE:
+                    consecutive_flood += 1
+                    if consecutive_flood >= MAX_CONSECUTIVE_FLOOD:
+                        raise RuntimeError(
+                            f"VK groups.search: {consecutive_flood} раза подряд "
+                            f"{last_search_error} — VK ограничил токен; источник "
+                            f"остановлен после {search_calls} запросов, чтобы не "
+                            "продлевать ограничение"
+                        )
+                else:
+                    consecutive_flood = 0
                 if "Too many" in last_search_error:
                     time.sleep(1.0)
                 continue
+            consecutive_flood = 0
             for it in r.get("response", {}).get("items", []):
                 gid = it.get("id")
                 if not gid:
