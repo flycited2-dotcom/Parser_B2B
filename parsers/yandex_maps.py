@@ -359,9 +359,9 @@ async def _scrape_org_page(context, org_id: str) -> dict:
                 for el in await page.query_selector_all(sel):
                     if sel.startswith("a"):
                         href = await el.get_attribute("href") or ""
-                        add_unique(phones, href.replace("tel:", "").strip())
+                        add_unique(phones, _phone_text(href.replace("tel:", "")))
                     else:
-                        add_unique(phones, (await el.inner_text()).strip())
+                        add_unique(phones, _phone_text(await el.inner_text()))
             except Exception:
                 continue
         out["phone"] = phones[0] if phones else ""
@@ -423,6 +423,12 @@ async def _scrape_org_page(context, org_id: str) -> dict:
 def _extract_org_id(value: str) -> str:
     match = ORG_ID_RE.search(str(value or ""))
     return match.group(1) if match else ""
+
+
+def _phone_text(value: str) -> str:
+    """Text of a phone element, or "" for labels like «Телефон»/«Показать»."""
+    clean = (value or "").strip()
+    return clean if len(re.sub(r"\D", "", clean)) >= 7 else ""
 
 
 DETAIL_QUALITY = {

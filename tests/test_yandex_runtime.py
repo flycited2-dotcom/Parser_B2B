@@ -295,3 +295,13 @@ def test_repeated_unrecognized_search_pages_open_circuit(monkeypatch):
 
     assert state.circuit_reason == "consecutive_detail_failures"
     assert state.statuses["search_markup_error"] == 3
+
+
+@pytest.mark.parametrize("raw", ["Телефон", "Показать телефон", "  ", "", "+7 (978"])
+def test_phone_text_drops_labels_without_number(raw):
+    assert yandex_maps._phone_text(raw) == ""
+
+
+def test_phone_text_keeps_real_numbers():
+    assert yandex_maps._phone_text(" +7 (978) 662-38-57 ") == "+7 (978) 662-38-57"
+    assert yandex_maps._phone_text("+73652572110") == "+73652572110"
