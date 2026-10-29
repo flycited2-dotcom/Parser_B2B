@@ -1,3 +1,5 @@
+import os
+import sys
 import time
 from urllib.parse import urlsplit
 
@@ -34,12 +36,27 @@ def _make_public_network_guard(cache_ttl: float = 30.0):
     return guard_public_network
 
 
+def chromium_sandbox_enabled() -> bool:
+    """Linux (production) is always sandboxed; only a Windows dev box may opt out.
+
+    On some Windows machines the sandboxed Chromium dies before the first page
+    (TargetClosedError on new_page), so local runs there set CHROMIUM_SANDBOX=0.
+    """
+    if sys.platform != "win32":
+        return True
+    raw = os.getenv("CHROMIUM_SANDBOX", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
 async def create_browser_context(playwright, headless=False):
+    sandbox = chromium_sandbox_enabled()
+    if not sandbox:
+        print("[browser] CHROMIUM_SANDBOX=0: Chromium sandbox disabled (Windows dev only)")
     browser = await playwright.chromium.launch(
         headless=headless,
         # Playwright otherwise disables the Chromium sandbox by default.
         # Production runs use a dedicated non-root system user.
-        chromium_sandbox=True,
+        chromium_sandbox=sandbox,
         args=[
             "--disable-blink-features=AutomationControlled",
             "--disable-gpu",

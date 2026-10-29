@@ -26,8 +26,26 @@ def test_apparmor_allows_userns_only_for_root_owned_playwright_paths():
 
 def test_browser_source_never_disables_sandbox():
     browser = (ROOT / "utils" / "browser.py").read_text(encoding="utf-8")
-    assert "chromium_sandbox=True" in browser
+    assert "chromium_sandbox=sandbox" in browser
     assert "--no-sandbox" not in browser
+
+
+def test_sandbox_cannot_be_disabled_off_windows(monkeypatch):
+    from utils import browser
+
+    monkeypatch.setenv("CHROMIUM_SANDBOX", "0")
+    monkeypatch.setattr(browser.sys, "platform", "linux")
+    assert browser.chromium_sandbox_enabled() is True
+
+
+def test_sandbox_opt_out_is_explicit_on_windows(monkeypatch):
+    from utils import browser
+
+    monkeypatch.setattr(browser.sys, "platform", "win32")
+    monkeypatch.delenv("CHROMIUM_SANDBOX", raising=False)
+    assert browser.chromium_sandbox_enabled() is True
+    monkeypatch.setenv("CHROMIUM_SANDBOX", "0")
+    assert browser.chromium_sandbox_enabled() is False
 
 
 def test_timer_runs_friday_and_does_not_collide():
